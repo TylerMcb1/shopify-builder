@@ -1,0 +1,745 @@
+I still don’t have a filesystem or Telegram attachment tool in this session, so I can’t send a real file. Below is the complete copy-ready content for PLAN.md.
+
+───
+
+Shopify Builder — Implementation Plan
+
+1. Product Summary
+
+Shopify Builder is a local desktop application that lets a non-technical user modify Shopify themes using natural-language instructions.
+
+The application wraps Claude Code behind a controlled GUI. Claude Code edits a local copy of a Shopify theme, while trusted application code handles Shopify authentication, theme retrieval, validation, Git history, and deployment.
+
+The application may:
+
+• Create a new unpublished theme for a change.
+• Update an existing unpublished theme.
+• Use the live theme as a read-only starting point.
+• Preview unpublished themes.
+• Maintain local Git-backed change history.
+• Undo changes made to unpublished themes.
+
+The application must never:
+
+• Modify the live theme.
+• Push files to the live theme.
+• Publish an unpublished theme.
+• Change which theme is currently live.
+• Give Claude Code access to Shopify credentials.
+• Give the renderer unrestricted shell access.
+
+2. MVP Goals
+
+The MVP must allow the user to:
+
+1. Connect one Shopify store.
+
+2. Enter a natural-language change request.
+
+3. Select one of two target workflows:
+
+  • Create a new unpublished theme.
+  • Update an existing unpublished theme.
+4. Select the base theme when creating a new theme.
+
+5. View unpublished themes in a clear theme picker.
+
+6. Generate changes locally with Claude Code.
+
+7. Review a summary and changed files.
+
+8. Run Shopify Theme Check.
+
+9. Push validated changes to the selected unpublished theme.
+
+10. Open the resulting Shopify preview.
+
+11. Review local change history.
+
+12. Undo the last application-generated change.
+
+3. Non-Goals
+
+The MVP will not support:
+
+• Publishing themes.
+• Changing the live theme.
+• Editing checkout.
+• Managing products, collections, orders, customers, or payments.
+• Installing or removing Shopify apps.
+• Editing third-party credentials or integrations.
+• Multi-store management.
+• Cloud synchronization.
+• Team collaboration.
+• Mobile support.
+• Fully autonomous deployment.
+• Arbitrary terminal access.
+
+4. Recommended Technology Stack
+
+Desktop shell
+
+• Electron
+• Electron Builder
+• TypeScript
+
+Electron is preferred because Shopify CLI, Git, Node.js tooling, and Claude Code can all be orchestrated from the Node-based main process.
+
+Frontend
+
+• React
+• Vite
+• TypeScript
+• Tailwind CSS
+• Radix UI primitives or shadcn/ui
+• Lucide icons
+• Zustand for lightweight UI state
+• TanStack Query for asynchronous process state
+
+Local orchestration
+
+• Electron main process
+• Typed IPC contracts
+• Node.js child processes
+• Zod validation
+• Execa for controlled process execution
+• Simple Git for Git operations
+
+External tools
+
+• Claude Code
+• Shopify CLI
+• Shopify Theme Check
+• Git
+
+Secure storage
+
+• Electron safeStorage
+• macOS Keychain
+• Windows Credential Manager
+
+Credentials must never be stored in plaintext project files, logs, Git commits, or renderer state.
+
+5. High-Level Architecture
+
+Electron Renderer
+  |
+  | Typed, restricted IPC
+  v
+Electron Main Process
+  |
+  +-- Store and credential service
+  +-- Shopify theme service
+  +-- Workspace manager
+  +-- Claude Code adapter
+  +-- Validation service
+  +-- Git history service
+  +-- Deployment safety policy
+  +-- Local application database
+  |
+  +--> Shopify CLI
+  +--> Claude Code
+  +--> Git
+  +--> Shopify Theme CheckTrust boundaries
+
+The application has three security zones:
+
+1. Renderer
+
+  • Displays data and collects user actions.
+  • Cannot run arbitrary commands.
+  • Cannot access credentials directly.
+2. Trusted main process
+
+  • Owns credentials and deployment policy.
+  • Validates every IPC request.
+  • Executes allowlisted commands.
+  • Rechecks theme safety before every push.
+3. Claude Code workspace
+  • Receives only the local theme and editing instructions.
+  • Cannot receive Shopify credentials.
+  • Cannot choose deployment targets.
+  • Cannot publish or push themes.
+  • Returns file changes and a summary to the trusted process.
+
+6. Core Workflow
+
+6.1 Application startup
+
+1. Load local settings.
+2. Verify required tools.
+3. Verify Shopify connection.
+4. Fetch the current theme list.
+5. classify themes as live or unpublished.
+6. Display the workspace screen.
+
+The application should show actionable setup instructions if Claude Code, Shopify CLI, or Git is unavailable.
+
+6.2 Create a new unpublished theme
+
+1. User enters a change request.
+
+2. User selects Create new unpublished theme.
+
+3. User selects a base theme:
+
+  • Current live theme, read-only.
+  • Existing unpublished theme.
+4. User supplies or accepts a generated theme name.
+
+5. Main process refreshes the theme list.
+
+6. Main process verifies the base theme still exists.
+
+7. Application creates an isolated local workspace.
+
+8. Shopify CLI pulls the base theme.
+
+9. Git records the original snapshot.
+
+10. Claude Code edits the local files.
+
+11. Application inspects the changed files.
+
+12. Shopify Theme Check runs.
+
+13. User reviews the summary and diff.
+
+14. Main process refreshes theme state again.
+
+15. Shopify CLI creates a new unpublished theme.
+
+16. Git records the deployed revision.
+
+17. Application opens the preview URL.
+
+Example generated name:
+
+AI Change - Announcement Bar - 2026-10-066.3 Update an existing unpublished theme
+
+1. User enters a change request.
+2. User selects an existing unpublished theme.
+3. Main process refreshes the theme list.
+4. Main process verifies the target is not live.
+5. Application pulls the latest target theme.
+6. Git records the original state.
+7. Claude Code modifies the local theme.
+8. Shopify Theme Check runs.
+9. User reviews the summary and diff.
+10. Main process fetches the theme list immediately before deployment.
+11. Main process verifies the immutable target ID is still unpublished.
+12. Application pushes the changed files.
+13. Git records the deployed revision.
+14. Application opens the theme preview.
+
+7. Live-Theme Safety Policy
+
+Live-theme protection is an application invariant, not merely a UI feature.
+
+Mandatory safeguards
+
+• Filter the live theme out of deployment-target selectors.
+• Permit the live theme only as a read-only base theme.
+• Resolve targets by immutable Shopify theme ID.
+• Fetch fresh theme data immediately before every push.
+• Reject targets whose role is main or equivalent.
+• Reject missing or ambiguous targets.
+• Never invoke a theme-publishing command.
+• Never use Shopify CLI flags that permit live-theme modification.
+• Do not expose a generic command-execution IPC endpoint.
+• Keep Shopify credentials inaccessible to Claude Code.
+• Maintain a strict command and argument allowlist.
+
+Example safety check:
+
+function assertSafeTarget(theme: ShopifyTheme): void {
+  if (theme.role === "main" || theme.isLive) {
+    throw new Error(
+      "Shopify Builder cannot modify the live theme."
+    );
+  }
+}The same check must run:
+
+• When a target is selected.
+• Before generation starts.
+• Before a preview push.
+• Immediately before an existing theme is updated.
+• Before an undo operation.
+
+8. Claude Code Integration
+
+Claude Code acts only as a local theme-editing engine.
+
+Inputs
+
+Claude Code receives:
+
+• The user’s request.
+• The isolated theme workspace path.
+• Shopify theme editing guidelines.
+• Allowed file patterns.
+• Prohibited actions.
+• Relevant validation feedback during an approved repair cycle.
+
+Allowed theme paths
+
+assets/**
+blocks/**
+config/**
+layout/**
+locales/**
+sections/**
+snippets/**
+templates/**Files outside these paths must be rejected unless explicitly added to the application policy.
+
+Claude Code must not receive
+
+• Shopify tokens.
+• Store passwords.
+• Credential-store values.
+• Deployment commands.
+• Permission to publish themes.
+• Access to unrelated user directories.
+• A generic instruction to operate the computer.
+
+System instructions
+
+Claude Code should be instructed to:
+• Make only the requested storefront change.
+• Preserve existing behavior unless necessary.
+• Keep Shopify Liquid and schema JSON valid.
+• Avoid destructive file deletion.
+• Avoid checkout, analytics, tracking, app embeds, and credentials.
+• Reuse existing theme patterns.
+• Keep changes minimal and reversible.
+• Return a concise summary and warnings.
+
+Execution strategy
+
+The preferred integration is a structured Claude Code invocation from the main process. The adapter should capture:
+
+• Execution status.
+• Structured events.
+• Changed files.
+• Completion summary.
+• Warnings.
+• Errors.
+• Duration.
+
+Claude Code never performs the Shopify push.
+
+9. Shopify CLI Integration
+
+Only the trusted main process may invoke Shopify CLI.
+
+Allowed operation categories
+
+• Authenticate or verify an existing session.
+• List themes.
+• Pull a specific theme.
+• Run Theme Check.
+• Create an unpublished theme.
+• Push to a verified unpublished theme.
+• Retrieve or construct preview URLs.
+
+Forbidden operation categories
+
+• Publish a theme.
+• Push to the live theme.
+• Use live-theme override flags.
+• Delete themes in the MVP.
+• Run arbitrary Shopify CLI commands supplied by the user or model.
+
+Every process invocation must use an argument array instead of a shell-interpolated command string.
+
+10. Git and Local History
+
+Each theme operation uses an isolated Git repository or worktree.
+
+Suggested commit sequence:
+
+snapshot: pulled theme 123456
+change: update announcement bar color
+deploy: pushed revision to unpublished theme 123456Each change record should contain:
+
+• Change ID.
+• Store identifier.
+• Target theme ID.
+• Target theme name.
+• Base theme ID.
+• User prompt.
+• Changed files.
+• Git commit IDs.
+• Validation result.
+• Deployment timestamp.
+• Preview URL.
+• Claude Code summary.
+• Application version.
+
+Undo
+
+Undo should:
+
+1. Load the previous application-created revision.
+2. Refresh Shopify theme state.
+3. Confirm the target remains unpublished.
+4. Restore only the files managed by that revision.
+5. Run Theme Check.
+6. Show an undo diff.
+7. Require user confirmation.
+8. Push to the same unpublished theme.
+
+Undo must never target a live theme.
+
+11. User Interface
+
+Visual direction
+
+The MVP should use a clean, calm, minimal interface.
+
+Accent color
+
+Use Shopify green as the primary accent:
+
+Primary: #008060
+Primary hover: #006E52
+Primary subtle: #E3F1DFSupporting palette
+
+Background: #F6F6F7
+Surface: #FFFFFF
+Text primary: #202223
+Text secondary: #6D7175
+Border: #D2D5D8
+Success: #008060
+Warning: #B98900
+Error: #D72C0D
+Focus ring: #2C6ECBDesign principles
+
+• Generous whitespace.
+• Clear hierarchy.
+• Rounded but restrained surfaces.
+• Accessible contrast.
+• Plain-language labels.
+• Minimal technical terminology.
+• One primary action per screen.
+• Persistent visibility of the selected target theme.
+• Clear distinction between base theme and deployment target.
+• No publish or make-live controls.
+
+Primary screens
+
+Setup
+
+• Tool readiness checks.
+• Shopify connection status.
+• Claude Code status.
+• Simple remediation instructions.
+
+Home
+
+• Natural-language prompt box.
+• Target workflow selector.
+• Theme picker.
+• Recent changes.
+• Generate button.
+
+Theme picker
+
+Theme options should be grouped as:
+
+Create new unpublished theme
+
+Existing unpublished themes
+- Fall Campaign Preview
+- Homepage Redesign
+- Product Page Experiment
+
+Read-only starting themes
+- Current live themeThe live theme must never appear as a deployment destination.
+
+Generation progress
+
+Example stages:
+
+Preparing workspace
+Pulling theme
+Analyzing request
+Generating changes
+Checking theme
+Preparing reviewReview
+
+Display:
+
+• User request.
+• Target theme.
+• Unpublished status badge.
+• Plain-English summary.
+• Changed-file list.
+• Validation results.
+• Warnings.
+• Optional expandable diff.
+
+Actions:
+
+• Push to Theme.
+• Discard.
+• Return to Edit.
+
+Success
+
+Display:
+
+• Updated theme name.
+• Preview button.
+• Make Another Change.
+• Undo Last Change.
+
+Do not display Publish, Make Live, or Replace Live Theme.
+
+12. Suggested Repository Structure
+
+shopify-builder/
+├── apps/
+│   └── desktop/
+│       ├── src/
+│       │   ├── main/
+│       │   │   ├── claude/
+│       │   │   ├── git/
+│       │   │   ├── ipc/
+│       │   │   ├── security/
+│       │   │   ├── shopify/
+│       │   │   ├── storage/
+│       │   │   ├── validation/
+│       │   │   └── workspace/
+│       │   ├── preload/
+│       │   ├── renderer/
+│       │   │   ├── components/
+│       │   │   ├── features/
+│       │   │   ├── hooks/
+│       │   │   ├── pages/
+│       │   │   ├── styles/
+│       │   │   └── stores/
+│       │   └── shared/
+│       │       ├── contracts/
+│       │       ├── schemas/
+│       │       └── types/
+│       └── tests/
+├── packages/
+│   ├── claude-adapter/
+│   ├── shopify-adapter/
+│   └── theme-policy/
+├── docs/
+│   ├── architecture.md
+│   ├── security.md
+│   └── development.md
+├── PLAN.md
+├── README.md
+├── package.json
+└── pnpm-workspace.yaml13. Typed IPC Surface
+
+Expose narrow operations such as:
+
+interface DesktopApi {
+  getToolStatus(): Promise<ToolStatus>;
+  getConnectionStatus(): Promise<ConnectionStatus>;
+  connectStore(): Promise<ConnectionResult>;
+  listThemes(): Promise<SafeThemeList>;
+  createChange(input: CreateChangeInput): Promise<ChangeResult>;
+  cancelChange(changeId: string): Promise<void>;
+  deployChange(input: DeployChangeInput): Promise<DeployResult>;
+  openPreview(themeId: string): Promise<void>;
+  listHistory(): Promise<ChangeRecord[]>;
+  prepareUndo(changeId: string): Promise<UndoPreview>;
+  applyUndo(changeId: string): Promise<DeployResult>;
+}Never expose APIs such as:
+
+runCommand(command: string)
+executeShell(input: string)
+pushTheme(themeId: string, flags: string[])14. Local Data
+
+The MVP may use SQLite for durable structured state.
+
+Recommended records:
+
+• Store connection metadata.
+• Theme cache.
+• Change requests.
+• Workspace references.
+• Git revisions.
+• Validation results.
+• Deployment records.
+• Application settings.
+
+Secrets must remain in the operating system credential store. SQLite stores only non-secret references and metadata.
+
+15. Validation Pipeline
+
+Before deployment:
+
+1. Verify modified paths are allowed.
+2. Reject symlinks escaping the workspace.
+3. Reject credential-like content.
+4. Parse changed JSON files.
+5. Run Shopify Theme Check.
+6. Verify the target theme is unpublished.
+7. Present the change for user review.
+
+A failed validation must block deployment.
+
+Claude Code may receive validation output for a limited repair attempt, but deployment still requires a passing validation result and user confirmation.
+
+16. Error Handling
+
+Errors should be translated into plain language.
+
+Examples:
+
+• “Shopify Builder could not connect to your store.”
+• “This theme became live after you selected it, so the update was stopped.”
+• “The generated theme contains an error and was not uploaded.”
+• “Claude Code did not finish the requested change.”
+• “Your original theme files are unchanged.”
+
+Logs should:
+
+• Use structured events.
+• Redact tokens and sensitive paths.
+• Include correlation IDs.
+• Avoid recording full credentials or environment variables.
+
+17. Testing Strategy
+
+Unit tests
+
+• Live-theme rejection.
+• Allowed-path enforcement.
+• Command argument construction.
+• IPC schema validation.
+• Theme-role normalization.
+• Credential redaction.
+• Change-state transitions.
+
+Integration tests
+
+• Pull an unpublished theme.
+• Generate a fixture change.
+• Run Theme Check.
+• Push to a test unpublished theme.
+• Detect a target that becomes live before deployment.
+• Restore a previous revision.
+
+UI tests
+
+• Select create-new workflow.
+• Select existing-theme workflow.
+• Confirm live theme cannot be selected as a target.
+• Review generated changes.
+• Handle validation failure.
+• Open preview.
+• Prepare an undo.
+
+Release-critical test
+
+Attempt every supported route with a live theme ID. Every route must reject the operation before executing a push.
+18. Delivery Phases
+
+Phase 1 — Foundation
+
+• Create Electron, React, and TypeScript workspace.
+• Add formatting, linting, and tests.
+• Implement secure preload bridge.
+• Add the MVP design system.
+• Detect required local tools.
+
+Phase 2 — Shopify integration
+
+• Connect one store.
+• List and classify themes.
+• Implement read-only live-theme handling.
+• Pull themes into isolated workspaces.
+• Generate preview links.
+
+Phase 3 — Claude Code wrapper
+
+• Implement the Claude adapter.
+• Add editing policy and path restrictions.
+• Capture summaries and changed files.
+• Add cancellation and timeout handling.
+
+Phase 4 — Validation and review
+
+• Add Theme Check.
+• Add JSON and path validation.
+• Build progress and review screens.
+• Add diff presentation.
+
+Phase 5 — Safe deployment
+
+• Create new unpublished themes.
+• Update existing unpublished themes.
+• Revalidate target role immediately before pushing.
+• Add deployment records.
+
+Phase 6 — History and undo
+
+• Add Git-backed revision history.
+• Add recent-change UI.
+• Implement safe undo for unpublished themes.
+
+Phase 7 — Packaging
+
+• Package for the user’s operating system.
+• Add code signing where appropriate.
+• Test clean installation.
+• Test upgrades and credential persistence.
+• Document setup and recovery.
+
+19. MVP Acceptance Criteria
+
+The MVP is complete when:
+
+• A user can connect one Shopify store.
+• Only unpublished themes can be deployment targets.
+• The live theme can be used only as a read-only base.
+• The user can create a new unpublished theme.
+• The user can update an existing unpublished theme.
+• Claude Code can modify an isolated local theme.
+• Claude Code cannot access Shopify credentials.
+• Theme Check blocks invalid deployments.
+• The user reviews changes before pushing.
+• The user can open the resulting preview.
+• Every successful change has Git-backed history.
+• Undo works for application-created unpublished-theme changes.
+• No application path can publish or modify the live theme.
+
+20. README Requirements
+
+README.md should document:
+
+• Product purpose.
+• Architecture overview.
+• Security model.
+• Live-theme restrictions.
+• Prerequisites.
+• Local development setup.
+• Claude Code setup.
+• Shopify connection setup.
+• Running the desktop application.
+• Creating a new unpublished theme.
+• Updating an existing unpublished theme.
+• Previewing changes.
+• Undoing a change.
+• Troubleshooting.
+• Current MVP limitations.
+• Follow-up development roadmap.
+
+21. Key Architectural Decisions
+
+1. Electron over Tauri: easier integration with Node.js, Shopify CLI, Git, and Claude Code.
+2. Local-first: no hosting requirement and credentials remain on the user’s computer.
+3. Claude Code edits only: deployment remains in trusted application code.
+4. Immutable theme IDs: names are display values, not security identifiers.
+5. Repeated safety checks: theme roles can change after initial selection.
+6. Git-backed history: every generated change remains traceable and reversible.
+7. Explicit user deployment: generation does not automatically upload changes.
+8. No live-theme functionality: publishing and live pushes are absent from the product, command policy, and IPC surface.
