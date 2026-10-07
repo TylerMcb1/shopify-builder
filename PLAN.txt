@@ -2,9 +2,9 @@ Shopify Builder — Implementation Plan
 
 1. Product Summary
 
-Shopify Builder is a local desktop application that lets a non-technical user modify Shopify themes using natural-language instructions.
+Shopify Builder is a local Windows desktop application that lets a non-technical user modify Shopify themes using natural-language instructions.
 
-The application wraps Claude Code (via the Claude Agent SDK) behind a controlled GUI. Claude Code runs inside an isolated container and edits a disposable copy of a Shopify theme. Trusted application code on the host handles Shopify authentication, theme retrieval, validation, Git history, previews, and saving changes to unpublished themes. Shopify CLI runs in its own separate container.
+The application wraps Claude Code (via the Claude Agent SDK) behind a controlled GUI. Claude Code runs inside an isolated Docker container and edits a disposable copy of a Shopify theme. Trusted application code on the host handles credentials, theme retrieval, validation, Git history, previews, and saving changes to unpublished themes. Shopify CLI runs in its own separate container.
 
 Shopify Builder is a Shopify theme harness only. It is not a general coding tool, it does not build Shopify apps, and it does not interact with GitHub or any remote Git service. Git is used purely as a local history and merge engine for theme files.
 
@@ -26,9 +26,10 @@ The application must never:
 • Publish an unpublished theme.
 • Change which theme is currently live.
 • Delete themes.
-• Give Claude Code access to Shopify credentials.
+• Give Claude Code access to any credential (Shopify or Anthropic).
 • Give Claude Code shell, network, or host filesystem access.
 • Give the renderer unrestricted shell access.
+• Store or transmit credentials in plaintext.
 
 Going live is always a manual action the user performs in the Shopify admin. The application prepares, checks, and explains; it never presses "Publish".
 
@@ -36,7 +37,7 @@ Going live is always a manual action the user performs in the Shopify admin. The
 
 The MVP must allow the user to:
 
-1. Install the app and complete a guided setup (container runtime, Shopify connection, Anthropic connection).
+1. Install the app and enter two credentials: a Shopify Theme Access password and an Anthropic API key.
 
 2. Connect one Shopify store.
 
@@ -54,11 +55,13 @@ The MVP must allow the user to:
 
 9. Save the finished change to the selected unpublished theme.
 
-10. Review local change history.
+10. Review local change history and recent chats (kept for 30 days).
 
 11. Undo any application-created change on an unpublished theme.
 
 12. Run a "Get ready to go live" check and follow step-by-step instructions to publish manually in Shopify.
+
+13. Receive application and tool updates automatically.
 
 3. Non-Goals
 
@@ -73,6 +76,8 @@ The MVP will not support:
 • Building Shopify apps or any non-theme software.
 • GitHub integration, Git remotes, or pushing Git history anywhere.
 • Editing third-party credentials or integrations.
+• Automated or OAuth-based Anthropic sign-in (the user pastes an API key).
+• macOS or Linux (Windows only for the MVP).
 • Multi-store management.
 • Cloud synchronization.
 • Team collaboration.
@@ -85,10 +90,11 @@ The MVP will not support:
 Desktop shell
 
 • Electron
-• Electron Builder
+• Electron Builder (Windows NSIS installer)
+• electron-updater (automatic updates)
 • TypeScript
 
-Electron is preferred because the trusted orchestration layer (container runtime control, Git, file intake, previews) is naturally written in the Node-based main process.
+Electron is preferred because the trusted orchestration layer (container control, Git, file intake, previews, credential handling) is naturally written in the Node-based main process.
 
 Frontend
 
@@ -106,30 +112,29 @@ Local orchestration (host, trusted)
 • Electron main process
 • Typed IPC contracts with a push-based job event channel
 • Zod validation for all IPC input and all container output
-• Execa for controlled invocation of the container runtime CLI (argument arrays only)
+• Execa for controlled invocation of the Docker CLI (argument arrays only)
 • Dugite (bundled, pinned Git binary) for local Git history, diffing, merging, and reverting
 • SQLite for durable structured state
 
 Container runtime
 
-• Podman (preferred: rootless, daemonless, free to use)
-• Docker (supported fallback)
-• A single runtime adapter hides the differences between the two
+• Docker Desktop for Windows, using Linux containers (its default mode).
+• The app does not create, configure, or manage any virtual machine. Docker Desktop is used as installed.
 
 Bundled, pinned tool images
 
 • Agent image: Node.js plus a pinned Claude Agent SDK version (which ships its own pinned Claude Code), plus the small agent runner.
-• Shopify image: Node.js plus a pinned Shopify CLI version (Theme Check is included as the "shopify theme check" command).
-• Egress proxy image: a tiny allowlisting HTTPS proxy (for example tinyproxy) used only by the agent container.
+• Shopify image: Node.js plus a pinned Shopify CLI version (Theme Check is included as the "shopify theme check" command), plus a small secret-receiving entrypoint.
+• Anthropic gateway image: a small purpose-built forwarding service that holds the Anthropic API key in memory and forwards model requests to the Anthropic API only.
 
 All three images are built from a shared slim base so layers are shared and downloads stay small. Images are referenced by immutable digest, never by a floating tag.
 
 Secure storage
 
-• Electron safeStorage (backed by macOS Keychain, Windows DPAPI/Credential Manager, or Linux libsecret/KWallet)
-• On Linux, if safeStorage reports the plaintext "basic_text" backend, the app refuses to store secrets and shows remediation steps.
+• Electron safeStorage, backed on Windows by DPAPI and bound to the signed-in Windows user account.
+• Encrypted credentials are stored as ciphertext in a dedicated secrets file in the app's user-data folder. They are never stored in SQLite.
 
-Credentials must never be stored in plaintext project files, logs, Git commits, container images, container configuration, or renderer state.
+Credentials must never be stored or transmitted in plaintext, and must never appear in project files, logs, Git commits, container images, container configuration, environment variables of Docker commands, command lines, or renderer state.
 
 5. High-Level Architecture
 
@@ -139,22 +144,23 @@ Electron Renderer
   v
 Electron Main Process (trusted host)
   |
-  +-- Setup and tool-readiness service
-  +-- Container runtime adapter (Podman / Docker)
-  +-- Store and credential service (safeStorage)
+  +-- Credential service (safeStorage, encrypted secret handoff)
+  +-- Docker runtime adapter
   +-- Shopify write gateway (the only path to any Shopify write)
   +-- Theme ownership registry (working copies, adopted, preview, retired)
   +-- File intake service (validates every file entering trusted storage)
   +-- Git history service (Dugite, host only)
   +-- Validation service (Theme Check baseline comparison)
-  +-- Change session manager (conversation, turns, approvals)
+  +-- Change session manager (conversation, steps, approvals)
+  +-- Chat history store (compact, 30-day retention)
   +-- Job runner and event bus
   +-- Preview and screenshot service (hardened hidden browser window)
+  +-- Update service (app and tool images)
   +-- Local application database (SQLite)
   |
-  +--> Agent container        (Claude Agent SDK; no Shopify access, no shell, no open network)
-  +--> Egress proxy container (allows the agent container to reach the Anthropic API only)
-  +--> Shopify container      (Shopify CLI; short-lived, one command per run)
+  +--> Agent container             (Claude Agent SDK; no credentials, no shell, no internet)
+  +--> Anthropic gateway container (holds the Anthropic key in memory; forwards to the Anthropic API only)
+  +--> Shopify container           (Shopify CLI; short-lived, one command per run)
 
 Trust boundaries
 
@@ -164,50 +170,54 @@ The application has five security zones:
 
   • Displays data and collects user actions.
   • Cannot run arbitrary commands.
-  • Cannot access credentials directly.
+  • Can send a credential to the main process once, at entry time, but can never read one back.
 
 2. Trusted main process (host)
 
   • Owns credentials, theme ownership records, and the deployment policy.
   • Validates every IPC request and every message coming out of a container.
   • Is the only zone that touches the Git store or the canonical theme files.
-  • Executes only allowlisted container runtime commands.
+  • Executes only allowlisted Docker commands.
   • Rechecks theme safety before every Shopify write.
 
 3. Agent container (untrusted)
 
   • Contains the Claude Agent SDK and the agent runner.
   • Sees only a disposable copy of the theme, mounted at a single workspace path.
-  • Has no Shopify CLI credentials, no Git store, no host home directory, and no container runtime socket.
-  • Has no direct network access; its only route out is the egress proxy, which permits the Anthropic API only.
+  • Holds no credentials of any kind, not even the Anthropic API key.
+  • Has no Git store, no host home directory, and no Docker socket.
+  • Is attached only to an internal Docker network whose only other member is the Anthropic gateway.
   • Returns file changes (left in the workspace) and structured events to the host.
 
-4. Shopify container (trusted code, short-lived)
+4. Anthropic gateway container (trusted code, minimal)
+
+  • Receives the Anthropic API key through the encrypted secret handoff (Section 6.5) and keeps it in memory only.
+  • Accepts model requests from the agent container, adds the API key, and forwards them over TLS to the Anthropic API.
+  • Forwards only the Anthropic API paths Claude Code needs for model requests. It cannot reach any other host. Everything else is refused and logged.
+
+5. Shopify container (trusted code, short-lived)
 
   • Contains a pinned Shopify CLI.
-  • Receives the Shopify credential only for the duration of a single command, over standard input.
+  • Receives the Shopify credential through the encrypted secret handoff for the duration of a single command.
   • Never sees the agent workspace or the Git store.
   • Is started by the Shopify write gateway with an argument list the gateway builds itself.
-
-5. Egress proxy container
-
-  • Sits on two networks: an internal network shared with the agent container, and the normal outbound network.
-  • Permits HTTPS CONNECT to the Anthropic API host(s) only. Everything else is refused and logged.
 
 6. Container Isolation Architecture
 
 Design goals
 
 • Claude Code can only read and write theme files in a disposable workspace.
+• Claude Code never possesses any credential.
 • The code that holds Shopify credentials and talks to Shopify never shares a filesystem with Claude Code.
 • Git history is never reachable from any container.
-• Low infrastructure overhead: one container runtime, three small images, no orchestration platform, no compose files required at runtime, no always-on services.
+• Credentials are encrypted at rest and in transit between processes.
+• Low infrastructure overhead: Docker Desktop only, three small images, no orchestration platform, no compose files at runtime, no virtual machines to manage, no always-on services.
 
 6.1 Why files move by copy, not by shared mounts
 
 The host is the broker between zones. Files only move between zones through the host's file intake service, which copies files and checks every one of them. No directory is ever mounted into both the agent container and the Shopify container.
 
-Host data layout (under the Electron user-data directory)
+Host data layout (under the app's user-data folder in the Windows user profile)
 
 stores/<store-id>/
   themes/<theme-id>/
@@ -217,47 +227,46 @@ stores/<store-id>/
     inbox/            Empty directory per pull. Mounted read-write into the Shopify container only during "theme pull".
   sessions/<session-id>/
     workspace/        Disposable theme copy. Mounted read-write into the agent container only.
-    agent-state/      Claude Agent SDK session files, so a conversation can resume after an app restart.
-                      Mounted into the agent container only.
+    agent-state/      Claude Agent SDK session files, so an open conversation can resume after an app restart.
+                      Mounted into the agent container only. Deleted when the session is saved or discarded.
 
 Separate Git container decision
 
-A dedicated Git container is not required. The Git directory lives outside every working tree and is never mounted anywhere, so no untrusted process can read or tamper with it. Git only ever operates on the canonical tree, which contains files that already passed intake. Running Git on the host with the bundled, pinned Dugite binary and hardened settings (Section 11.6) gives the same isolation with less overhead. If a future requirement needs Git to run on untrusted content, the same runtime adapter can run it in a fourth container without changing the rest of the design.
+A dedicated Git container is not required. The Git directory lives outside every working tree and is never mounted anywhere, so no untrusted process can read or tamper with it. Git only ever operates on the canonical tree, which contains files that already passed intake. Running Git on the host with the bundled, pinned Dugite binary and hardened settings (Section 12.6) gives the same isolation with less overhead. If a future requirement needs Git to run on untrusted content, the same Docker adapter can run it in a fourth container without changing the rest of the design.
 
 6.2 Agent container
 
 Lifetime
 
 • One agent container per change session. It starts when the session starts, stays alive across conversation turns, and is removed when the session is saved, discarded, or idle beyond a timeout.
-• If the app restarts, a new container resumes the conversation from agent-state.
+• If the app restarts while a session is open, a new container resumes the conversation from agent-state.
 
 Mounts
 
 • workspace/ read-write at the single workspace path.
 • agent-state/ read-write for SDK session files.
 • Application policy files (system instructions, allowed-path list, sensitive-file list) read-only from the image itself.
-• Nothing else. Never the host home directory, the Git store, canonical/, inbox/, or the container runtime socket.
+• Nothing else. Never the user profile, the Git store, canonical/, inbox/, the secrets file, or the Docker socket.
 
 Runtime restrictions
 
-• Runs as a non-root user (user-namespace mapping on Podman, explicit user ID on Docker).
+• Runs as an explicit non-root user.
 • Read-only root filesystem with a small temporary scratch area.
 • All Linux capabilities dropped, no-new-privileges set.
 • CPU, memory, and process-count limits.
-• Attached only to the internal network; outbound traffic must go through the egress proxy.
-• Claude Code non-essential traffic (telemetry, error reporting, update checks) disabled through its documented environment settings.
+• Attached only to the internal agent network, which has no route to the internet. The only reachable endpoint is the Anthropic gateway.
+• Claude Code non-essential traffic (telemetry, error reporting, update checks) disabled through its documented settings.
 
 Credentials
 
-• The Anthropic credential is stored in safeStorage on the host and handed to the agent runner over standard input as the first protocol message when the container starts. It never appears in the container's configuration, image, or command line.
-• No Shopify credential ever enters this container.
+• None. Claude Code is configured, through its documented base-URL setting, to send model requests to the Anthropic gateway with a meaningless placeholder key. The real API key never enters this container.
 
 Claude Agent SDK configuration (enforced by the agent runner)
 
 • Allowed tools: file read, file write, file edit, file glob, file search, plus two app-defined tools: "ask the user a question" and "report the result of this step".
 • Disallowed tools: shell/Bash, web fetch, web search, notebook editing, sub-agent spawning, and any MCP servers other than the app-defined ones.
 • Project settings and instruction files found inside the workspace (for example CLAUDE.md or .claude/ folders) are never loaded. Only application-provided instructions are used.
-• Every tool call passes through a permission check that rejects any path outside the workspace or outside the allowed theme paths, and pauses for user approval on sensitive files (Section 9.4).
+• Every tool call passes through a permission check that rejects any path outside the workspace or outside the allowed theme paths, and pauses for user approval on sensitive files (Section 10.4).
 • Turn limits and a per-step time limit stop runaway sessions.
 
 Agent runner protocol
@@ -266,7 +275,7 @@ Agent runner protocol
 • Host to runner: start, user message, approval decision, question answer, repair request, cancel.
 • Runner to host: progress, assistant message, approval request, question, step result, error.
 • The host treats every runner message as untrusted. Each message is validated against a schema; anything malformed ends the session safely.
-• The runner's path checks are a convenience and an early warning. The authoritative enforcement is the host's file intake (Section 13), which runs regardless of what the runner reports.
+• The runner's path checks are a convenience and an early warning. The authoritative enforcement is the host's file intake (Section 14), which runs regardless of what the runner reports.
 
 6.3 Shopify container
 
@@ -279,7 +288,7 @@ Mounts by command
 • List themes: no mounts.
 • Pull theme: a fresh empty inbox/ directory, read-write.
 • Push theme: canonical/, read-only.
-• Theme Check: canonical/ (or a candidate tree, see Section 13), read-only, plus the application's own Theme Check configuration, read-only.
+• Theme Check: canonical/ (or a candidate tree, see Section 14), read-only, plus the application's own Theme Check configuration, read-only.
 
 Network
 
@@ -288,44 +297,102 @@ Network
 
 Credentials
 
-• The Shopify credential is passed to a small entrypoint over standard input. The entrypoint places it in the Shopify CLI process environment only, closes standard input, and runs the CLI non-interactively. The credential never appears in the container command line, the container configuration, or the image.
+• The Shopify Theme Access password arrives through the encrypted secret handoff (Section 6.5). The entrypoint decrypts it in memory, places it only in the Shopify CLI process environment inside the container, and runs the CLI non-interactively.
 
 Runtime restrictions
 
 • Same non-root, dropped-capability, no-new-privileges, read-only root filesystem, and resource limits as the agent container.
-• Shopify CLI analytics disabled; the CLI is forced into non-interactive (CI) mode so any confirmation prompt fails closed.
+• Shopify CLI analytics and self-update checks disabled; the CLI is forced into non-interactive (CI) mode so any confirmation prompt fails closed.
 
-6.4 Egress proxy container
+6.4 Anthropic gateway container
 
-• Started on demand when the first agent session begins; stopped when no sessions remain.
-• Configured with deny-by-default filtering and an allowlist containing only the Anthropic API host(s), port 443.
-• Refused requests are logged as structured events so unexpected exfiltration attempts are visible.
+• Started on demand when the first agent session begins; stopped when no sessions remain, or when the user replaces or removes the API key.
+• Attached to two networks: the internal agent network (to receive requests) and the normal outbound network (to reach the Anthropic API).
+• Receives the API key through the encrypted secret handoff (Section 6.5) and keeps it only in process memory.
+• Forwards requests only to the Anthropic API host over TLS and only for the API paths needed for model requests. It is not a general proxy and cannot reach any other destination.
+• Strips any credential the agent container sends and substitutes the real key.
+• Logs refused requests as structured events (path and reason only, never request content or headers).
+• Runs with the same non-root, read-only, dropped-capability restrictions as the other containers.
 
-6.5 Runtime setup and overhead
+6.5 Encrypted secret handoff
 
-• The setup screen detects Podman first, then Docker.
-• If neither is installed, the app explains in plain language why it is needed and opens the official Podman installer download page.
-• On macOS and Windows the app initializes and starts the Podman virtual machine automatically and keeps the user-data directory inside the VM's default shared paths.
-• The three images are pulled by digest on first run, with a progress bar. A future option can ship image archives with the installer for offline first-run.
-• Networks (the internal agent network) are created once and reused.
-• The host never mounts the Podman or Docker control socket into any container.
+Secrets (the Anthropic API key and the Shopify Theme Access password) are never written to a container's disk, image, configuration, environment settings, or command line, and are never sent across a process boundary in plaintext.
 
-7. Core Workflow
+At rest
 
-7.1 Application startup
+• Encrypted with Electron safeStorage (Windows DPAPI, bound to the signed-in Windows user) and stored as ciphertext in the secrets file.
+
+Handoff into a container
+
+1. The host starts the container (Anthropic gateway or Shopify) with its standard input attached and no secret in its configuration.
+2. The container's trusted entrypoint generates a one-time key pair in memory and writes only the public key to standard output.
+3. The host decrypts the secret from safeStorage into memory, encrypts it to that one-time public key using authenticated public-key encryption (for example, an X25519 sealed box from a well-reviewed library such as libsodium), and writes only the ciphertext to the container's standard input.
+4. The host discards its plaintext copy immediately.
+5. The entrypoint decrypts the secret in memory, discards the one-time private key, and closes standard input.
+6. From the container onward, the secret travels only inside TLS (to Shopify or to Anthropic).
+
+Honest limits
+
+• A secret must exist in plaintext in the memory of the one process that uses it (the gateway or the Shopify CLI). That is the only place it is ever unencrypted.
+• DPAPI protects secrets against other Windows accounts and against copied files. It does not protect against malware already running as the same Windows user. The security documentation states this.
+
+6.6 Docker Desktop runtime
+
+• Docker Desktop for Windows is the only supported runtime. The user is expected to have it installed; the app does not install it, configure it, or manage any virtual machine.
+• At startup, the app checks that Docker Desktop is running in Linux containers mode and meets a minimum version. If not, it shows a plain message (for example, "Please open Docker Desktop, then click Retry") rather than a setup walkthrough.
+• The three images are pulled automatically by digest in the background on first run and after updates (Section 21), with a progress indicator. This needs no user action.
+• The internal agent network is created automatically once and reused.
+• The app never mounts the Docker socket into any container.
+• All bind-mounted folders live inside the app's user-data folder in the Windows user profile.
+
+7. Credential Setup
+
+Setup consists only of storing two credentials. There is no automated or OAuth sign-in flow; the user pastes each value into a prompt.
+
+7.1 Anthropic API key
+
+1. The setup screen shows a "Connect Claude" card with one sentence explaining why the key is needed and a "Get an API key" link, which opens the Anthropic Console in the user's browser.
+2. The user pastes the key into a masked password-style field (with a show/hide toggle) and clicks "Save".
+3. The renderer sends the key to the main process once, through a dedicated IPC call, and clears the field immediately. The key is never kept in renderer state, query caches, or developer-tool logs.
+4. The main process checks the key's format, then verifies it with one minimal authenticated request made directly to the Anthropic API over TLS (a request that does not use model tokens).
+5. If verification fails, the user sees a plain message: "That key didn't work. Please check it and try again." or "Couldn't reach Anthropic. Please check your internet connection."
+6. On success, the key is encrypted with safeStorage and written as ciphertext to the secrets file. The plaintext is discarded.
+7. The card then shows "Claude connected" and the last four characters of the key, for identification only. The full key can never be viewed or copied back out of the app.
+8. Actions: "Replace key" (repeats steps 2–6 and restarts the gateway) and "Remove key" (deletes the ciphertext and stops the gateway).
+9. If the stored key can no longer be decrypted (for example, after the Windows profile changes), the app asks the user to enter the key again.
+
+7.2 Shopify connection
+
+1. The setup screen shows a "Connect your store" card with a short explanation of Theme Access passwords and a link to Shopify's Theme Access app instructions.
+2. The user enters the store's myshopify.com domain and pastes the Theme Access password into a masked field.
+3. The same one-time IPC, verification (a theme list through the Shopify container), encryption, and display rules as Section 7.1 apply.
+4. The store domain is non-secret and stored in SQLite.
+
+7.3 Credential rules
+
+• Credentials leave safeStorage only through the encrypted secret handoff (Section 6.5) or the single verification request at entry time.
+• Logs redact anything matching credential patterns.
+• Credentials are never included in error reports, events, or IPC responses.
+• The optional storefront password for password-protected stores (Section 8.4) follows the same storage rules.
+
+8. Core Workflow
+
+8.1 Application startup
 
 1. Load local settings.
-2. Verify the container runtime is installed and running (start the Podman VM if needed).
-3. Verify the three pinned images are present and match their expected digests.
-4. Verify the Shopify connection (Shopify container, list themes).
-5. Verify the Anthropic connection.
-6. Fetch the current theme list and classify every theme using the role allowlist (Section 8).
-7. Detect role changes since last run (for example, a working copy that the user has published manually) and update the ownership registry.
-8. Display the home screen.
+2. Check for app and tool updates in the background (Section 21).
+3. Verify Docker Desktop is running in Linux containers mode.
+4. Verify the three pinned images are present and match their expected digests; pull any that are missing.
+5. Verify both credentials are stored and decryptable; if not, show the setup screen.
+6. Verify the Shopify connection (Shopify container, list themes).
+7. Fetch the current theme list and classify every theme using the role allowlist (Section 9).
+8. Detect role changes since last run (for example, a working copy that the user has published manually) and update the ownership registry.
+9. Apply chat retention (Section 15).
+10. Display the home screen.
 
-The application shows actionable, plain-language setup instructions if any check fails.
+The application shows actionable, plain-language instructions if any check fails.
 
-7.2 Working copy model (default workflow)
+8.2 Working copy model (default workflow)
 
 The working copy is an unpublished theme that the app creates and manages. Changes build up on it over time. When the user is happy, they publish it themselves in Shopify.
 
@@ -337,13 +404,13 @@ Creating the working copy
 4. Shopify container pulls the live theme (read-only operation) into inbox/.
 5. File intake copies the pulled files into canonical/.
 6. Git records a "sync" commit on the shopify branch, tagged with the live theme ID it came from.
-7. Theme Check runs to create the baseline (Section 13.3).
+7. Theme Check runs to create the baseline (Section 14.3).
 8. Shopify gateway creates a new unpublished theme named, for example, "[Builder] Working copy" and pushes the files.
 9. The new theme ID is read from the CLI's structured output and saved in the ownership registry immediately, before any other step, as kind "working copy", created by the app, with the live theme ID recorded as its origin.
 
 Named copies (advanced)
 
-• Same flow, with a user-supplied or generated name, for example "[Builder] Holiday sale - 2026-10-07".
+• Same flow, with a user-supplied or generated name, for example "[Builder] Holiday sale".
 
 Adopting an existing unpublished theme (advanced)
 
@@ -351,24 +418,24 @@ Adopting an existing unpublished theme (advanced)
 • A confirmation dialog explains: "Shopify Builder will be able to save changes to this theme."
 • On confirmation, the theme is recorded in the ownership registry as kind "adopted". Until then it is available only as a read-only base.
 
-7.3 Change session (conversation)
+8.3 Change session (conversation)
 
 1. User selects the target theme (the working copy is pre-selected) and types a request.
 2. Main process refreshes the theme list and confirms through the Shopify gateway that the target is writable.
 3. Host checks out a new session branch from the target's shopify branch and copies canonical/ into a fresh session workspace.
-4. In the background, the preview theme is synchronized to match the session's starting point (Section 7.4).
-5. Agent container starts with the workspace mounted and receives the request.
+4. In the background, the preview theme is synchronized to match the session's starting point (Section 8.4).
+5. Agent container starts with the workspace mounted and receives the request. The Anthropic gateway starts if it is not already running.
 6. Claude works. It may ask the user clarifying questions, which appear as chat bubbles with optional quick-reply choices.
-7. If Claude tries to edit a sensitive file, the session pauses and the sensitive-file pop-up appears (Section 9.4).
-8. When Claude reports the step result, the host runs file intake on the workspace (Section 13).
+7. If Claude tries to edit a sensitive file, the session pauses and the sensitive-file pop-up appears (Section 10.4).
+8. When Claude reports the step result, the host runs file intake on the workspace (Section 14).
 9. Accepted files are copied into a candidate tree and Theme Check runs against the baseline.
-10. If Theme Check reports new blocking problems, the automatic repair loop runs (Section 9.5).
+10. If Theme Check reports new blocking problems, the automatic repair loop runs (Section 10.5).
 11. On success, the candidate files are written to canonical/ and Git records a "turn" commit on the session branch.
 12. The changed files are pushed to the preview theme.
 13. Screenshots are captured and shown next to Claude's plain-English summary.
 14. The user either replies with a follow-up request (back to step 6), clicks "Undo this step", clicks "Save to theme", or clicks "Discard".
 
-7.4 Visual preview
+8.4 Visual preview
 
 Non-technical users review the result visually, not as code.
 
@@ -386,25 +453,27 @@ Screenshots
 • The window captures desktop-width and mobile-width screenshots.
 • Pages to capture default to the home page. Claude's step result may suggest affected page types (home, product, collection, cart, other template); the app maps these to known store URLs and ignores anything else.
 • "Before" screenshots of the same pages are taken once from the session's starting theme, so the user sees before and after side by side.
-• For password-protected stores, the user enters the storefront password once. It is stored in safeStorage and submitted only by the capture window.
+• Only the latest before-and-after set per session is kept, compressed (Section 15).
+• For password-protected stores, the user enters the storefront password once. It is stored encrypted under the credential rules (Section 7.3) and submitted only by the capture window.
 • An "Open preview in browser" button opens the same URL externally.
 
 The code diff remains available under an "Advanced: show file changes" expander.
 
-7.5 Saving a change to the theme
+8.5 Saving a change to the theme
 
 1. User clicks "Save to theme".
 2. Job runner takes the per-theme lock.
-3. Shopify gateway fetches a fresh theme list and verifies the target is writable (Section 8).
-4. Drift check: the target is pulled fresh into inbox/ and compared with the last sync commit (Section 12).
+3. Shopify gateway fetches a fresh theme list and verifies the target is writable (Section 9).
+4. Drift check: the target is pulled fresh into inbox/ and compared with the last sync commit (Section 13).
 5. If Shopify-side changes overlap with this session's files, Git merges them into the session branch. A clean merge re-runs Theme Check and refreshes the preview, then asks the user to confirm again. A conflicting merge stops the save with a plain-language explanation and options.
 6. Shopify gateway pushes only the files this session changed, without deleting anything remote.
-7. Shopify gateway re-fetches the theme list and confirms the target is still unpublished (Section 8.4).
+7. Shopify gateway re-fetches the theme list and confirms the target is still unpublished (Section 9.4).
 8. Git squash-merges the session branch into the shopify branch as a single "change" commit, so each saved change can be undone as one unit.
-9. A change record is written to SQLite.
-10. Success screen shows the theme name, preview button, "Make another change", and "Undo this change".
+9. A minimal change record is written to SQLite (Section 12.4).
+10. The session's workspace and agent-state are deleted; the chat stays in history for 30 days (Section 15).
+11. Success screen shows the theme name, preview button, "Make another change", and "Undo this change".
 
-7.6 Going live manually (publish workflow)
+8.6 Going live manually (publish workflow)
 
 The app never publishes. Instead it gets the user ready and hands off to Shopify.
 
@@ -445,7 +514,7 @@ Why this works
 • The live-theme sync check prevents a publish from silently undoing changes made to the live theme in the meantime.
 • One working copy at a time keeps the store well under its theme limit.
 
-7.7 Undo
+8.7 Undo
 
 Undo a step inside a session
 
@@ -457,47 +526,47 @@ Undo a step inside a session
 Undo a saved change
 
 1. User picks a change from history and clicks "Undo this change".
-2. Host creates an undo session branch and asks Git to revert that change's single commit. This works for any saved change, not only the most recent.
+2. Host creates an undo session branch and asks Git to revert that change's single commit. This works for any saved change, not only the most recent, and does not depend on the chat still being in history.
 3. If the revert conflicts because later changes depend on it, the app explains which later changes must be undone first.
 4. Intake, Theme Check, and preview run as for any change.
 5. The user reviews before-and-after screenshots and confirms.
-6. The save flow in Section 7.5 runs, including the drift check and the target checks.
+6. The save flow in Section 8.5 runs, including the drift check and the target checks.
 
 Creating a working copy cannot be undone by the app, because the app never deletes themes. The app explains how to delete the theme in Shopify if the user wants to.
 
-8. Live-Theme Safety Policy
+9. Live-Theme Safety Policy
 
 Live-theme protection is an application invariant, not merely a UI feature.
 
-8.1 Deny-by-default role allowlist
+9.1 Deny-by-default role allowlist
 
 A theme may receive a write only if all of the following are true at the moment of the write:
 
-• Its Shopify role is exactly "unpublished" and it is recorded in the ownership registry as a working copy, named copy, or adopted theme, and it is not marked retired; or
-• Its Shopify role is exactly "development" (or the fallback preview theme is unpublished) and it is recorded as the app's preview theme, and the write is a preview push.
+• Its Shopify role is exactly "unpublished", it is recorded in the ownership registry as a working copy, named copy, or adopted theme, and it is not marked retired; or
+• Its Shopify role is exactly "development" (or, for the fallback preview theme, "unpublished"), it is recorded as the app's preview theme, and the write is a preview push.
 
 Every other role (main/live, demo, locked, archived, or any role Shopify adds in future) is read-only. Missing, duplicated, or ambiguous theme IDs are rejected. Theme names are display values only; targets are always resolved by immutable theme ID.
 
-8.2 Single chokepoint: the Shopify write gateway
+9.2 Single chokepoint: the Shopify write gateway
 
 • Every Shopify write (create theme, push to theme, preview push) goes through one gateway module in the main process.
 • The gateway is the only code allowed to start a Shopify container for a write command.
-• For every write, the gateway itself fetches a fresh theme list, applies the allowlist in Section 8.1, and builds the full argument list. Callers pass only a change ID or session ID, never flags or raw theme IDs.
+• For every write, the gateway itself fetches a fresh theme list, applies the allowlist in Section 9.1, and builds the full argument list. Callers pass only a change ID or session ID, never flags or raw theme IDs.
 • Checks in the UI (filtered pickers, disabled buttons) are convenience only. Security comes from the gateway.
 
-8.3 Mandatory safeguards
+9.3 Mandatory safeguards
 
 • Filter the live theme, retired themes, and non-owned themes out of save-target selectors.
 • Permit the live theme only as a read-only base or comparison source.
 • Never invoke a theme-publishing command.
 • Never pass the Shopify CLI flag that allows writing to the live theme ("--allow-live").
-• Run the Shopify CLI non-interactively with standard input closed, so if the CLI ever asks for confirmation to touch the live theme, the request fails instead of proceeding.
+• Run the Shopify CLI non-interactively with standard input closed after the secret handoff, so if the CLI ever asks for confirmation to touch the live theme, the request fails instead of proceeding.
 • Never delete remote files or themes.
 • Do not expose a generic command-execution IPC endpoint.
-• Keep Shopify credentials out of the agent container entirely.
-• Maintain a strict command and argument allowlist (Section 10).
+• Keep all credentials out of the agent container.
+• Maintain a strict command and argument allowlist (Section 11).
 
-8.4 Defense in depth and residual risk
+9.4 Defense in depth and residual risk
 
 • A theme's role could, in principle, change in the short window between the gateway's final check and the push finishing (for example, if someone publishes it in the Shopify admin at that exact moment). This cannot be fully eliminated from outside Shopify.
 • To keep the window small: the role check runs immediately before the push, pushes contain only changed files, and nothing else runs between check and push.
@@ -505,11 +574,11 @@ Every other role (main/live, demo, locked, archived, or any role Shopify adds in
 • After every push, the gateway fetches the theme list again. If the target's role changed, the app stops all further writes to that theme, records an incident, and tells the user in plain language what happened and what was pushed.
 • The documentation and README describe this residual risk honestly instead of claiming it is impossible.
 
-9. Claude Code Integration
+10. Claude Code Integration
 
 Claude Code acts only as a local theme-editing engine inside the agent container.
 
-9.1 Inputs
+10.1 Inputs
 
 Claude Code receives:
 
@@ -521,7 +590,7 @@ Claude Code receives:
 • New validation problems during an automatic repair attempt.
 • Notices from the host (for example, "the user undid the last step" or "the user declined edits to config/settings_data.json").
 
-9.2 Allowed theme paths
+10.2 Allowed theme paths
 
 assets/**
 blocks/**
@@ -532,20 +601,21 @@ sections/**
 snippets/**
 templates/**
 
-Files outside these paths are rejected by the runner and, authoritatively, by host intake. Some files inside these paths are sensitive and require user approval (Section 9.4). Some are blocked entirely (for example layout/checkout.liquid).
+Files outside these paths are rejected by the runner and, authoritatively, by host intake. Some files inside these paths are sensitive and require user approval (Section 10.4). Some are blocked entirely (for example layout/checkout.liquid).
 
-9.3 Claude Code must not receive
+10.3 Claude Code must not receive
 
 • Shopify tokens or Theme Access passwords.
+• The Anthropic API key.
 • Store or storefront passwords.
-• Credential-store values other than its own Anthropic credential.
+• Any other credential-store value.
 • Deployment commands or the ability to run any command.
 • Permission to publish or push themes.
 • Access to anything outside the workspace.
-• Network access beyond the Anthropic API.
+• Any network access except model requests through the Anthropic gateway.
 • A generic instruction to operate the computer.
 
-9.4 Sensitive files and the approval pop-up
+10.4 Sensitive files and the approval pop-up
 
 Some theme files hold settings the merchant customizes in the Shopify theme editor, or affect every page. Editing them can overwrite the merchant's work.
 
@@ -579,19 +649,19 @@ Pop-up content
 
 Outcomes
 
-• Approve: the approval (file names, session, step, timestamp) is recorded in SQLite and the edit proceeds. The review screen and change history show that sensitive files were changed with approval.
+• Approve: the approved file names are recorded against that step and the edit proceeds. The save confirmation and change history show that sensitive files were changed with approval.
 • Decline: the edit is refused and nothing is written to those files. Claude is told the user declined and is asked to complete the request without changing those files, or to explain in plain language why it cannot.
 
-9.5 Automatic repair loop
+10.5 Automatic repair loop
 
-• After each step, if Theme Check reports new blocking problems (Section 13.3), the host automatically sends only those new problems back to Claude as a repair request. The user does not need to approve this.
+• After each step, if Theme Check reports new blocking problems (Section 14.3), the host automatically sends only those new problems back to Claude as a repair request. The user does not need to approve this.
 • Maximum of 2 repair attempts per step.
 • The progress area shows "Fixing a problem I found…" during repair.
 • Each repair attempt goes through intake, sensitive-file approval, and Theme Check like any other step.
 • If the problems remain after the final attempt, the host restores the workspace and candidate tree to the last good step and shows: "I couldn't make this change without errors. Your theme hasn't changed." Options: "Try describing it differently" or "Undo this step".
 • Saving a change still requires a passing validation result and explicit user confirmation.
 
-9.6 System instructions
+10.6 System instructions
 
 Claude Code is instructed to:
 
@@ -606,22 +676,22 @@ Claude Code is instructed to:
 • Ask the user a short clarifying question when a request is ambiguous, instead of guessing.
 • Finish each step by reporting a plain-English summary, warnings, and the page types likely affected.
 
-9.7 Execution and what the host trusts
+10.7 Execution and what the host trusts
 
-The agent runner streams structured events (progress, messages, approval requests, questions, step results, errors, duration) to the host.
+The agent runner streams structured events (progress, messages, approval requests, questions, step results, errors) to the host.
 
-The host derives every fact it acts on from Git and the filesystem, not from Claude's own report (Section 11.5). Claude's summary and warnings are shown to the user, clearly labeled as Claude's description. Claude's suggested page types are used only as screenshot hints, after validation against known page types.
+The host derives every fact it acts on from Git and the filesystem, not from Claude's own report (Section 12.5). Claude's summary and warnings are shown to the user, clearly labeled as Claude's description. Claude's suggested page types are used only as screenshot hints, after validation against known page types.
 
 Claude Code never performs any Shopify operation.
 
-10. Shopify CLI Integration
+11. Shopify CLI Integration
 
 Only the Shopify write gateway (for writes) and the Shopify read service (for reads) in the trusted main process may start a Shopify container.
 
 Authentication
 
-• The store connects with a Theme Access password (created through Shopify's Theme Access app), which grants theme access only. Setup walks the user through obtaining it.
-• The password is stored in safeStorage and delivered to each Shopify container over standard input, as described in Section 6.3. The store domain is passed as a non-secret setting.
+• The store connects with a Theme Access password (created through Shopify's Theme Access app), which grants theme access only. It is entered through the prompt in Section 7.2.
+• The password reaches each Shopify container only through the encrypted secret handoff (Section 6.5). The store domain is passed as a non-secret setting.
 
 Allowed operations (with the only permitted flags)
 
@@ -643,29 +713,33 @@ Forbidden operations
 • Read configuration from the theme directory (for example shopify.theme.toml). All settings are passed explicitly, and such files are rejected by intake anyway.
 • Run any Shopify CLI command supplied by the user or the model.
 
-Every invocation of the container runtime and of the CLI inside it uses an argument array, never a shell-interpolated string.
+Every invocation of Docker, and of the CLI inside the container, uses an argument array, never a shell-interpolated string.
 
-11. Git and Local History
+12. Git and Local History
 
 Git is a local history, diff, and merge engine only. The app never configures remotes, never clones from or pushes to any server, and never interacts with GitHub. Any local Git capability that helps the core workflow (branches, squash merges, three-way merges, reverts, diffs, temporary indexes) may be used freely.
 
-11.1 One repository per theme
+12.1 One repository per theme
 
 • Each theme the app tracks has one Git repository, keyed by store ID and theme ID, stored in history.git/ outside the working tree.
 • A new working copy created after a publish cycle starts from the retired theme's repository history, keeping history continuous.
 
-11.2 Branches
+12.2 Branches
 
 • shopify: always represents what is believed to be on Shopify for this theme.
 • session/<session-id>: the in-progress change, one commit per successful conversation step.
 • undo/<change-id>: an in-progress undo.
 
-11.3 Commit types
+Session and undo branches are deleted once they are merged or discarded.
+
+12.3 Commit types
 
 • sync: a fresh pull from Shopify (initial snapshot, drift check, or live-theme sync check). Created from inbox/ using a temporary index, so it never disturbs an active session's checkout.
 • turn: one successful conversation step on a session branch.
 • change: a saved change, squash-merged onto the shopify branch. One commit per saved change, so it can be reverted as a unit.
 • revert: an undo of a saved change.
+
+Commit messages contain only a short title (for example, "make the announcement bar green"), never the full conversation.
 
 Example history on the shopify branch:
 
@@ -675,25 +749,19 @@ sync: theme editor edits detected in config/settings_data.json
 change: add a free-shipping banner to product pages
 revert: undo "make the announcement bar green"
 
-11.4 Change record (SQLite)
+12.4 Change record (SQLite, minimal)
 
-Each saved change records:
+Each saved change records only what the app needs to list and undo it:
 
-• Change ID and session ID.
-• Store identifier.
-• Target theme ID and name.
-• Origin theme ID (the live theme a working copy came from).
-• The conversation (user messages and Claude summaries).
-• Changed files (derived from Git).
-• Sensitive-file approvals.
-• Git commit IDs (turns, change, any merge).
-• Validation result, including the baseline comparison.
-• Screenshots (stored as local files, referenced by path).
-• Save timestamp.
-• Preview URL.
-• Application and pinned tool versions.
+• Change ID.
+• Target theme ID.
+• Git "change" commit ID.
+• Short title.
+• Names of sensitive files changed with approval (if any).
 
-11.5 Facts come from Git and the filesystem
+Everything else (dates, changed files, diffs) is read from Git on demand. Conversations live in the chat history store and expire after 30 days (Section 15); change records and Git history do not expire, so undo keeps working.
+
+12.5 Facts come from Git and the filesystem
 
 The host computes, never trusts from Claude:
 
@@ -705,15 +773,15 @@ The host computes, never trusts from Claude:
 
 Deleted files are not propagated to Shopify in the MVP. If intake detects a deletion, the file is restored from canonical/ and the user is told.
 
-11.6 Git hardening
+12.6 Git hardening
 
 • The Git directory is separate from the working tree and never mounted into any container.
 • Hooks are disabled for every Git call (hooks path set to an empty app-owned directory).
 • System and global Git configuration are ignored; the app supplies its own minimal configuration and a fixed local identity ("Shopify Builder").
-• Symlinks, file-system monitors, and attribute-driven filters are disabled. .gitattributes and any other dotfiles are rejected by intake before they can reach the working tree.
+• Symlinks, file-system monitors, and attribute-driven filters are disabled; long Windows paths are enabled. .gitattributes and any other dotfiles are rejected by intake before they can reach the working tree.
 • Git only ever operates on canonical/, whose contents have passed intake.
 
-12. Sync and Drift Protection
+13. Sync and Drift Protection
 
 Merchants and installed apps can change a theme in Shopify at any time (most often config/settings_data.json and templates/*.json through the theme editor). The app must never silently overwrite those changes.
 
@@ -728,11 +796,11 @@ Before every save and every undo save:
    • Clean merge: re-run Theme Check and refresh the preview, then ask the user to confirm again before saving.
    • Conflict: stop. Show "This theme was changed in Shopify while you were working, in the same places your change affects." Offer "Redo my change on the latest version" (starts a new step with Claude on the merged starting point) or "Cancel".
 
-The same drift approach is used by the live-theme sync check in Section 7.6.
+The same drift approach is used by the live-theme sync check in Section 8.6.
 
-13. Validation Pipeline
+14. Validation Pipeline
 
-13.1 File intake (every file entering trusted storage)
+14.1 File intake (every file entering trusted storage)
 
 Intake runs on Shopify pulls (inbox/) and on every Claude step (workspace/). It scans the actual files on disk, not just what Git reports, so ignored or hidden files cannot slip through.
 
@@ -741,19 +809,20 @@ Intake rejects:
 • Any path outside the allowed theme paths.
 • Any dotfile or dot-directory anywhere, including .git, .gitattributes, .shopifyignore, .theme-check.yml, and .claude.
 • Root-level configuration files such as shopify.theme.toml, package.json, or CLAUDE.md.
-• Symlinks, hard links, device files, and anything that is not a regular file.
+• Symlinks, hard links, Windows junctions and other reparse points, device files, and anything that is not a regular file.
 • Paths that escape the theme directory.
+• Windows-reserved file names (such as CON or NUL), names with trailing dots or spaces, and paths that differ only by letter case.
 • Files above per-type size limits.
 • Text files that are not valid UTF-8.
 • Credential-like content.
-• Blocked files (Section 9.4).
-• Deletions (restored, see Section 11.5).
+• Blocked files (Section 10.4).
+• Deletions (restored, see Section 12.5).
 
-Intake requires a recorded approval for every changed sensitive file (Section 9.4).
+Intake requires a recorded approval for every changed sensitive file (Section 10.4).
 
 Rejected files are restored from canonical/ in the workspace, and the user and Claude are told in plain language.
 
-13.2 Per-step checks
+14.2 Per-step checks
 
 1. File intake.
 2. Sensitive-file approval check.
@@ -761,10 +830,10 @@ Rejected files are restored from canonical/ in the workspace, and the user and C
 4. Copy accepted files into a candidate tree (canonical/ plus this step's changes).
 5. Run Theme Check on the candidate tree.
 6. Compare with the baseline.
-7. Automatic repair if needed (Section 9.5).
+7. Automatic repair if needed (Section 10.5).
 8. Commit, push to preview, capture screenshots.
 
-13.3 Theme Check baseline
+14.3 Theme Check baseline
 
 Many themes, including popular third-party themes, already have Theme Check offenses. Blocking on those would block every change.
 
@@ -775,16 +844,53 @@ Many themes, including popular third-party themes, already have Theme Check offe
 • Pre-existing offenses are hidden by default, with an "Existing issues in this theme" expander.
 • Theme Check always uses the application's configuration file, never one from the theme.
 
-13.4 Before saving
+14.4 Before saving
 
 1. All per-step checks passed for the latest step.
-2. Drift check (Section 12).
+2. Drift check (Section 13).
 3. Shopify gateway verifies the target is writable.
 4. User confirms.
 
 A failed validation always blocks saving.
 
-14. User Interface
+15. Chat History and Retention
+
+Chat history lives inside the application, in SQLite, and is stored compactly.
+
+15.1 What is stored per chat
+
+• Chat (session) ID.
+• Target theme ID.
+• Short title.
+• Last-activity date, at day precision. This is the only date kept and exists only to apply retention.
+• The conversation as a single compressed block: an ordered list of who spoke (user or Claude) and the plain text of each message, including Claude's step summaries, clarifying questions, and the user's answers.
+• The latest before-and-after screenshot set, compressed (for example, WebP), stored as files and referenced from the chat.
+
+15.2 What is not stored
+
+• Per-message timestamps.
+• Tool calls, raw model output, streaming fragments, or progress events.
+• Token counts, durations, or other telemetry.
+• Intermediate screenshots from earlier steps.
+• Claude Agent SDK session files after the session is saved or discarded (they exist only to resume an open session).
+• Workspaces after the session is saved or discarded.
+
+15.3 Retention
+
+• Chats are kept for 30 days after their last activity, then deleted automatically.
+• Retention runs at startup and once a day while the app is open.
+• Deletion removes the conversation, its screenshots, and any leftover workspace or agent-state.
+• An open (unsaved) session idle for 30 days is discarded the same way. Its unsaved changes never reached any saved theme. The home screen shows a notice a few days before this happens.
+• The user can delete any chat sooner.
+• After deletion, the minimal change record (Section 12.4) and Git history remain, so history and undo still work.
+• After deletions, SQLite reclaims free space incrementally so the database stays small.
+
+15.4 Logs
+
+• Logs never contain chat text or credentials.
+• Log files are size-capped and rotated.
+
+16. User Interface
 
 Visual direction
 
@@ -827,17 +933,17 @@ Primary screens
 
 Setup
 
-• Container runtime status, with install guidance and automatic VM start.
-• Tool image download progress.
-• Shopify connection (Theme Access password walkthrough).
-• Anthropic connection.
-• Simple remediation instructions for each failed check.
+• "Connect Claude" card: API key prompt (Section 7.1).
+• "Connect your store" card: store domain and Theme Access password prompt (Section 7.2).
+• A single status line for Docker Desktop ("Ready" or "Please open Docker Desktop, then click Retry").
+• Background progress for the first tool download.
 
 Home
 
 • Working copy card: name, "Unpublished" badge, last change, "Make a change", "Get ready to go live".
-• Recent changes.
+• Recent chats (last 30 days) and recent changes.
 • Advanced: create a named copy, adopt an unpublished theme.
+• Update banner when an update is ready (Section 21).
 
 Theme picker (advanced)
 
@@ -872,7 +978,7 @@ Updating preview
 
 Sensitive-file pop-up
 
-As specified in Section 9.4: title, message, file names with plain-language descriptions, "Approve" and "Decline" buttons, Decline focused by default.
+As specified in Section 10.4: title, message, file names with plain-language descriptions, "Approve" and "Decline" buttons, Decline focused by default.
 
 Save confirmation
 
@@ -891,29 +997,39 @@ Success
 
 Get ready to go live
 
-• Checklist with each check's status (Section 7.6).
+• Checklist with each check's status (Section 8.6).
 • "Bring in live changes" when needed.
 • Step-by-step manual publish instructions.
 • "Open Shopify Themes page" button.
 
+Settings
+
+• Claude connection: "Connected (ending in ••••)", Replace key, Remove key.
+• Store connection: domain, Replace password, Disconnect.
+• Chat history: retention notice (30 days), delete a chat.
+• App version and "Check for updates".
+
 Do not display Publish, Make Live, or Replace Live Theme controls.
 
-15. Suggested Repository Structure
+17. Suggested Repository Structure
 
 shopify-builder/
 ├── apps/
 │   └── desktop/
 │       ├── src/
 │       │   ├── main/
-│       │   │   ├── containers/     (runtime adapter: Podman / Docker)
+│       │   │   ├── containers/     (Docker adapter)
+│       │   │   ├── credentials/    (safeStorage, encrypted secret handoff, key prompts)
 │       │   │   ├── agent/          (agent session manager, runner protocol)
 │       │   │   ├── shopify/        (read service, write gateway)
 │       │   │   ├── intake/         (file intake rules)
 │       │   │   ├── git/
 │       │   │   ├── validation/     (Theme Check baseline comparison)
 │       │   │   ├── preview/        (preview theme, screenshot window)
+│       │   │   ├── history/        (chat store, retention)
 │       │   │   ├── jobs/           (job runner, event bus, locks)
 │       │   │   ├── ownership/      (theme ownership registry)
+│       │   │   ├── updates/        (app updater, tool image updates)
 │       │   │   ├── ipc/
 │       │   │   ├── security/
 │       │   │   └── storage/
@@ -933,8 +1049,8 @@ shopify-builder/
 ├── containers/
 │   ├── base/                       (shared slim base image definition)
 │   ├── agent/                      (agent image definition and agent runner)
-│   ├── shopify/                    (Shopify CLI image definition and stdin entrypoint)
-│   └── egress-proxy/               (proxy image definition and Anthropic-only allowlist)
+│   ├── shopify/                    (Shopify CLI image definition and secret-receiving entrypoint)
+│   └── anthropic-gateway/          (gateway image definition and Anthropic-only forwarding rules)
 ├── packages/
 │   ├── claude-adapter/
 │   ├── shopify-adapter/
@@ -949,21 +1065,24 @@ shopify-builder/
 ├── package.json
 └── pnpm-workspace.yaml
 
-16. Typed IPC Surface
+18. Typed IPC Surface
 
 Long-running work is owned by the main process as jobs. Requests that start work return a job reference immediately; progress and results arrive as pushed events. The renderer is a projection of main-process state.
 
 Request operations (narrow, schema-validated)
 
-• Get setup status; run a setup step.
-• Connect store; get connection status.
+• Get setup status.
+• Save Anthropic API key; remove Anthropic API key. (Write-only: no operation ever returns a key.)
+• Save Shopify connection (domain and Theme Access password); disconnect store. (Write-only for the password.)
 • List themes (already classified as save-target or read-only).
-• Create working copy; create named copy; adopt theme (requires confirmation token from the confirmation dialog).
+• Create working copy; create named copy; adopt theme (requires the confirmation from the confirmation dialog).
 • Start change session; send message; answer question; respond to sensitive-file approval (approve or decline); undo step; save session; discard session.
 • Cancel job; get job snapshot.
-• Open preview (by theme ID; main constructs the URL); open Shopify Themes admin page.
+• Open preview (by theme ID; main constructs the URL); open Shopify Themes admin page; open Anthropic Console.
 • Run go-live readiness check; bring in live changes.
-• List history; start undo of a saved change.
+• List chats; open chat; delete chat.
+• List change history; start undo of a saved change.
+• Get update status; check for updates; restart to update.
 • Subscribe to events; unsubscribe.
 
 Pushed events
@@ -971,6 +1090,7 @@ Pushed events
 • Job progress, job completed, job failed, job cancelled.
 • Session assistant message, session question asked, session approval requested, session step completed, session preview ready.
 • Theme role changed, working copy went live, safety incident.
+• Update downloaded, tool images updated.
 
 Event rules
 
@@ -981,7 +1101,8 @@ Event rules
 
 Jobs
 
-• Job states are persisted in SQLite so an interrupted job (for example, the app closed during a save) is detected and reconciled on the next start, by re-pulling the target and comparing it with the expected Git state.
+• Active job states are persisted in SQLite so an interrupted job (for example, the app closed during a save) is detected and reconciled on the next start, by re-pulling the target and comparing it with the expected Git state.
+• Completed job records are removed once their result has been applied.
 • A per-theme lock prevents two jobs from changing the same theme at the same time.
 • A single-instance lock prevents two copies of the app from running.
 
@@ -989,47 +1110,73 @@ Never expose operations such as:
 
 • Run an arbitrary command.
 • Execute shell input.
+• Read back a stored credential.
 • Push to a theme with caller-supplied flags.
 • Start a container with caller-supplied arguments or mounts.
 
-17. Local Data
+19. Local Data
 
-SQLite stores durable structured state:
+SQLite stores only the structured state the app needs:
 
-• Store connection metadata (non-secret).
+• Store domain (non-secret).
 • Theme cache and theme ownership registry (kind, created by app, adopted, retired, origin theme, lineage).
-• Change sessions, steps, and conversation.
-• Sensitive-file approvals.
-• Jobs and their states.
-• Git commit references.
-• Validation results and baselines.
-• Save and incident records.
-• Screenshot file references.
-• Pinned image digests and tool versions.
+• Chats, stored compactly with 30-day retention (Section 15).
+• Minimal change records (Section 12.4).
+• Active jobs.
+• Theme Check baselines, referenced by sync commit.
+• Safety incident records.
+• Current pinned image digests.
 • Application settings.
 
-Secrets (Theme Access password, Anthropic credential, storefront password) remain in safeStorage. SQLite stores only non-secret references and metadata.
+Secrets (Anthropic API key, Theme Access password, storefront password) are kept only as safeStorage ciphertext in the secrets file, never in SQLite.
 
-18. Electron Security Baseline
+20. Electron Security Baseline
 
 • Context isolation on, renderer sandbox on, Node integration off in every window.
 • A strict Content Security Policy for the renderer.
-• The preload exposes only the typed API in Section 16.
+• The preload exposes only the typed API in Section 18.
 • Every IPC handler checks that the request came from the app's own window.
 • In-app navigation and new windows are blocked.
-• External links open only through the main process, and only for allowlisted Shopify domains (the store's myshopify.com domain and the Shopify admin).
+• External links open only through the main process, and only for allowlisted domains (the store's myshopify.com domain, the Shopify admin, Shopify's Theme Access help page, and the Anthropic Console).
 • The screenshot window uses a separate, non-persistent session, no preload, sandbox on, navigation limited to the store's domain, and is never shown to the user as an interactive browser.
 • Electron fuses: disable running as plain Node, disable Node options and inspect flags, enable ASAR integrity checking.
 • Single-instance lock.
 
-19. Error Handling
+21. Automatic Updates
+
+21.1 Application updates (Electron)
+
+• The app is distributed as a code-signed Windows installer built with Electron Builder.
+• electron-updater checks a static HTTPS update feed at startup and every few hours, and downloads updates in the background.
+• Before installing, the updater verifies the code signature and publisher. Unsigned or mismatched updates are rejected.
+• Updates are applied on the next restart. When one is ready, the home screen shows "An update is ready" with a "Restart to update" button.
+• The app never restarts or installs an update while a job is running.
+• Each update carries the Electron runtime, the bundled Git (Dugite), the policy files, and the tool manifest (Section 21.2).
+• The update feed can declare a minimum supported version. Older versions finish any open save but refuse to start new sessions until updated (for example, if Shopify stops accepting an old Shopify CLI version).
+
+21.2 Pinned tool updates
+
+• Tool versions stay pinned. Each app release contains a tool manifest listing the exact image digests for the agent, Shopify, and Anthropic gateway images. Because the manifest ships inside the signed app, it is covered by the app's code signature.
+• After an app update, the new images are pulled in the background and their digests verified before the app switches to them.
+• Sessions already running keep their current images until they finish.
+• If a download fails or is interrupted, the app keeps using the previous verified images and retries later.
+• Previous images are removed after the new set has been used successfully.
+• Tools never update themselves inside containers: Claude Code's auto-updater and Shopify CLI's version checks are disabled.
+• Bumping a tool version is a normal release: update the pin, rebuild the image, run the contract tests (CLI arguments, JSON output parsing, container isolation), and publish an app update.
+
+21.3 Docker Desktop
+
+• Docker Desktop updates itself. The app only checks for a minimum supported version at startup and shows a plain message if it is too old.
+
+22. Error Handling
 
 Errors should be translated into plain language.
 
 Examples:
 
 • "Shopify Builder could not connect to your store."
-• "Shopify Builder needs Podman to keep your store safe. Here's how to install it."
+• "Please open Docker Desktop, then click Retry."
+• "That API key didn't work. Please check it and try again."
 • "This theme became live after you selected it, so the update was stopped."
 • "This theme was changed in Shopify while you were working."
 • "I couldn't make this change without errors. Your theme hasn't changed."
@@ -1038,33 +1185,43 @@ Examples:
 Logs should:
 
 • Use structured events.
-• Redact tokens and sensitive paths.
+• Redact credentials and sensitive paths.
 • Include correlation IDs (job, session, change).
-• Record refused egress-proxy requests and intake rejections.
-• Avoid recording full credentials or environment variables.
+• Record refused gateway requests and intake rejections.
+• Never record chat text, credentials, or environment variables.
 
-20. Testing Strategy
+23. Testing Strategy
 
 Unit tests
 
 • Role allowlist: every non-allowed role and every non-owned theme is rejected.
 • Retired and rollback themes are read-only.
-• Allowed-path, dotfile, symlink, and blocked-file intake rules.
+• Allowed-path, dotfile, symlink, reparse-point, reserved-name, and blocked-file intake rules.
 • Sensitive-file detection and approval enforcement.
 • Shopify command and argument construction (never "--allow-live", never publish, always "nodelete" and "only" for non-preview pushes).
-• Container run argument construction (mounts, networks, capabilities).
+• Docker run argument construction (mounts, networks, capabilities; no secrets anywhere in arguments).
 • IPC schema validation and agent runner message validation.
 • Theme Check baseline comparison.
 • Credential redaction.
+• Chat compaction and 30-day retention.
 • Job state transitions and recovery.
 
-Container isolation tests
+Credential and container isolation tests
 
-• The agent container cannot reach any host other than the Anthropic API.
-• The agent container cannot see the Git store, canonical/, inbox/, the host home directory, or the runtime socket.
+• The API key prompt never stores the key in renderer state, and no IPC operation returns a stored credential.
+• Captured standard-input traffic during secret handoff contains only ciphertext.
+• Secrets never appear in Docker container configuration, command lines, environment settings, images, logs, or SQLite.
+• The agent container holds no credential and cannot reach any destination other than the Anthropic gateway.
+• The Anthropic gateway refuses non-allowlisted paths and cannot reach any host other than the Anthropic API.
+• The agent container cannot see the Git store, canonical/, inbox/, the user profile, the secrets file, or the Docker socket.
 • The agent runner refuses shell, web, and out-of-workspace tool calls.
-• Shopify credentials never appear in container configuration, command lines, logs, or the agent container.
 • Theme Check containers have no network and no credential.
+
+Update tests
+
+• Signed updates install; unsigned or tampered updates are rejected.
+• Updates never install while a job is running.
+• Tool image switch-over verifies digests and falls back to previous images on failure.
 
 Integration tests (against a Shopify Partner development store)
 
@@ -1074,24 +1231,26 @@ Integration tests (against a Shopify Partner development store)
 • Automatic repair succeeds; automatic repair exhausts attempts and restores.
 • Save only changed files; Shopify-side edits to other files survive.
 • Drift with overlapping edits: clean merge and conflict paths.
-• Undo a non-latest saved change; undo blocked by a dependent later change.
+• Undo a non-latest saved change, including after its chat has expired; undo blocked by a dependent later change.
 • Go-live readiness with and without live-theme changes.
 • Detect a working copy published manually and mark the old live theme as rollback.
 • Detect a target that becomes live before saving.
 
 UI tests
 
+• API key prompt: save, replace, remove, invalid key.
 • Live theme cannot be selected as a save target.
 • Sensitive-file pop-up shows file names, Decline is the default.
 • Conversation, clarifying question, and undo-step flows.
 • Validation failure messaging.
 • Open preview and open Shopify Themes admin page.
+• Update banner and restart.
 
 Release-critical test
 
 Attempt every supported route with a live theme ID, a retired theme ID, a rollback theme ID, and a non-owned unpublished theme ID. Every route must reject the operation before any Shopify container is started for a write.
 
-21. Delivery Phases
+24. Delivery Phases
 
 Phase 1 — Foundation
 
@@ -1099,13 +1258,13 @@ Phase 1 — Foundation
 • Add formatting, linting, and tests.
 • Implement the secure preload bridge and Electron security baseline.
 • Add the MVP design system.
-• Implement the container runtime adapter and setup screen.
+• Implement the Docker adapter and Docker Desktop status check.
 • Build and publish the three pinned images.
 
-Phase 2 — Shopify integration
+Phase 2 — Credentials and Shopify integration
 
-• Theme Access connection and safeStorage.
-• Shopify container with stdin credential entrypoint.
+• Credential service: safeStorage, API key and Theme Access prompts, encrypted secret handoff.
+• Shopify container with secret-receiving entrypoint.
 • List and classify themes; ownership registry.
 • Pull themes through intake into per-theme Git repositories.
 • Create the working copy.
@@ -1113,7 +1272,7 @@ Phase 2 — Shopify integration
 Phase 3 — Agent container
 
 • Agent runner, protocol, and tool restrictions.
-• Egress proxy with Anthropic-only allowlist.
+• Anthropic gateway with Anthropic-only forwarding.
 • Session workspaces and resume.
 • Sensitive-file approval pop-up.
 • Cancellation and timeout handling.
@@ -1130,24 +1289,25 @@ Phase 5 — Saving
 • Shopify write gateway.
 • Drift check and merge.
 • Changed-files-only pushes and post-push verification.
-• Change records.
+• Minimal change records.
 
 Phase 6 — History, undo, and go-live
 
+• Chat history store and 30-day retention.
 • History screen.
 • Undo step and undo saved change.
 • Go-live readiness check, live-change merge, manual publish guide.
 • Detection of manual publish and rollback labeling.
 
-Phase 7 — Packaging
+Phase 7 — Packaging and updates
 
-• Package for the user's operating system.
-• Add code signing where appropriate.
-• Test clean installation, including Podman installation and VM start.
-• Test upgrades, image digest updates, and credential persistence.
+• Code-signed Windows installer.
+• Automatic app updates and tool image updates.
+• Test clean installation on Windows with Docker Desktop.
+• Test upgrades, image switch-over, and credential persistence across updates.
 • Document setup and recovery.
 
-22. Toolchain Bundling and Pinning
+25. Toolchain Bundling and Pinning
 
 Target users cannot be expected to install Node.js, Git, Shopify CLI, or Claude Code.
 
@@ -1156,17 +1316,17 @@ Target users cannot be expected to install Node.js, Git, Shopify CLI, or Claude 
 • Claude Code: bundled in the agent image through a pinned Claude Agent SDK version.
 • Node.js: bundled inside the images; the host app uses Electron's own runtime.
 • Images are referenced by digest; the app verifies digests at startup.
-• Upgrading any tool is a deliberate app release: bump the version, rebuild the image, run the contract tests that check CLI arguments and JSON output parsing, then ship the new digest.
-• The only prerequisite the user installs is the container runtime (Podman preferred), and setup guides them through it.
-• Setup then needs only the Shopify connection and the Anthropic connection.
+• Pinned versions are updated through the automatic update process in Section 21.
+• The only prerequisite is Docker Desktop. The only setup the user performs is entering the two credentials (Section 7).
 
-23. MVP Acceptance Criteria
+26. MVP Acceptance Criteria
 
 The MVP is complete when:
 
-• A user can complete setup without installing Node.js, Git, Shopify CLI, or Claude Code.
+• A user with Docker Desktop installed can complete setup by entering only an Anthropic API key and a Shopify Theme Access password.
+• Credentials are encrypted at rest, handed to containers only as ciphertext, and can never be read back through the app.
 • A user can connect one Shopify store.
-• Claude Code runs only inside the agent container and cannot reach Shopify credentials, the Git store, the host filesystem, a shell, or any network host other than the Anthropic API.
+• Claude Code runs only inside the agent container and cannot reach any credential, the Git store, the host filesystem, a shell, or any destination other than the Anthropic gateway.
 • Only app-managed or explicitly adopted unpublished themes can receive saves.
 • The live theme can be used only as a read-only base.
 • The user can create a working copy and refine changes through a conversation.
@@ -1176,45 +1336,53 @@ The MVP is complete when:
 • Saves push only changed files and never overwrite Shopify-side edits silently.
 • The user reviews and confirms before every save.
 • Every saved change has Git-backed history and can be undone.
+• Chats are stored compactly and deleted after 30 days of inactivity.
+• The app and its pinned tools update automatically and verify signatures and digests.
 • The go-live check and manual publish guide work, and the app detects the swap afterwards.
 • No application path can publish or modify the live theme.
 
-24. README Requirements
+27. README Requirements
 
 README.md should document:
 
 • Product purpose.
 • Architecture overview, including the container zones.
-• Security model and the residual risk described in Section 8.4.
+• Security model, encrypted credential handling, and the residual risks described in Sections 6.5 and 9.4.
 • Live-theme restrictions and the manual go-live workflow.
-• Prerequisites (container runtime).
+• Prerequisites (Windows with Docker Desktop).
 • Local development setup.
 • Building the container images.
-• Anthropic connection setup.
-• Shopify connection setup (Theme Access password).
+• Entering the Anthropic API key.
+• Entering the Shopify store domain and Theme Access password.
 • Running the desktop application.
 • Creating a working copy.
 • Making and previewing changes.
 • Approving sensitive-file edits.
 • Undoing a change.
 • Getting ready to go live.
+• Chat history retention.
+• Automatic updates.
 • Troubleshooting.
 • Current MVP limitations.
 • Follow-up development roadmap.
 
-25. Key Architectural Decisions
+28. Key Architectural Decisions
 
-1. Electron over Tauri: easier orchestration of containers, Git, and file intake from a Node-based main process.
-2. Local-first: no hosting requirement and credentials remain on the user's computer.
-3. Container isolation: Claude Code runs in its own container with no shell, no Shopify credentials, and Anthropic-only network access; Shopify CLI runs in a separate short-lived container.
-4. Copy-based handoff: files cross zones only through host intake; no directory is shared between the agent and Shopify containers, and Git is never mounted into any container.
-5. Low overhead: one container runtime, three small pinned images, no always-on services.
-6. Claude Code edits only: every Shopify operation stays in trusted application code behind a single write gateway.
-7. Deny-by-default targets: only app-managed or adopted unpublished themes can be written; theme IDs, not names, are identifiers.
-8. Repeated safety checks with defense in depth: roles are rechecked before and after every write, and the CLI's own live-theme guard is never overridden.
-9. Visual review: changes are previewed on a hidden development theme with screenshots before anything is saved.
-10. Conversational changes: a change is a session of steps, each one validated, previewed, and individually undoable.
-11. Git-backed history: one repository per theme, one commit per saved change, reverts for undo, merges for drift.
-12. Explicit saving: only preview pushes happen automatically; saving to an unpublished theme always needs the user's confirmation.
-13. Manual go-live: the app prepares and checks, the user publishes in Shopify; publishing is absent from the product, command policy, and IPC surface.
-14. Pinned, bundled toolchain: the user installs only a container runtime.
+1. Electron over Tauri: easier orchestration of containers, Git, file intake, and credentials from a Node-based main process.
+2. Local-first on Windows: no hosting requirement and credentials remain on the user's computer.
+3. Docker Desktop as the only runtime: no virtual machines or extra runtime setup for the app to manage.
+4. Container isolation: Claude Code runs in its own container with no shell, no credentials, and no internet; Shopify CLI runs in a separate short-lived container.
+5. Anthropic gateway: the API key lives only in a minimal gateway container, so Claude Code never possesses it.
+6. Encrypted secret handoff: credentials are encrypted at rest with DPAPI and passed to containers only as ciphertext sealed to a one-time key.
+7. Copy-based handoff of files: files cross zones only through host intake; no directory is shared between the agent and Shopify containers, and Git is never mounted into any container.
+8. Low overhead: Docker Desktop, three small pinned images, no always-on services.
+9. Claude Code edits only: every Shopify operation stays in trusted application code behind a single write gateway.
+10. Deny-by-default targets: only app-managed or adopted unpublished themes can be written; theme IDs, not names, are identifiers.
+11. Repeated safety checks with defense in depth: roles are rechecked before and after every write, and the CLI's own live-theme guard is never overridden.
+12. Visual review: changes are previewed on a hidden development theme with screenshots before anything is saved.
+13. Conversational changes: a change is a session of steps, each one validated, previewed, and individually undoable.
+14. Git-backed history: one repository per theme, one commit per saved change, reverts for undo, merges for drift.
+15. Lean, expiring chat history: compact storage, no excess metadata, deleted after 30 days; Git history and minimal change records keep undo working.
+16. Explicit saving: only preview pushes happen automatically; saving to an unpublished theme always needs the user's confirmation.
+17. Manual go-live: the app prepares and checks, the user publishes in Shopify; publishing is absent from the product, command policy, and IPC surface.
+18. Pinned, bundled, automatically updated toolchain: the user installs only Docker Desktop and enters two credentials.
