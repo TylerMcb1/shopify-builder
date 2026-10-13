@@ -1,0 +1,72 @@
+# Development and validation reference ONLY. In production the Electron main process starts
+# these containers itself through its Docker adapter (README 6: no compose at runtime), using
+# the same restrictions. Keep this file and the adapter's run arguments in sync.
+#
+#   pnpm images:build
+#   docker compose -f containers/compose.yaml up -d anthropic-gateway   # then pipe the handoff to its stdin
+#   docker compose -f containers/compose.yaml --profile agent run --rm agent
+#   docker compose -f containers/compose.yaml --profile tools run --rm shopify theme list --json
+name: shopify-builder
+
+x-hardened: &hardened
+  user: "10001:10001"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  pids_limit: 256
+  tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+  restart: "no"
+
+networks:
+  # No route to the internet. Members: agent + gateway only.
+  agent-internal:
+    internal: true
+  # Normal outbound network (gateway -> Anthropic, shopify -> Shopify).
+  egress: {}
+
+services:
+  anthropic-gateway:
+    <<: *hardened
+    image: shopify-builder/anthropic-gateway:local
+    build:
+      context: ./anthropic-gateway
+      args: { BASE_IMAGE: shopify-builder/base:local }
+    stdin_open: true        # secret handoff arrives on stdin
+    mem_limit: 256m
+    cpus: 0.5
+    networks:
+      agent-internal: { aliases: [anthropic-gateway] }
+      egress: {}
+
+  agent:
+    <<: *hardened
+    profiles: [agent]
+    image: shopify-builder/agent:local
+    build:
+      context: ./agent
+      args: { BASE_IMAGE: shopify-builder/base:local }
+    stdin_open: true        # runner protocol over stdin/stdout
+    mem_limit: 2g
+    cpus: 2
+    pids_limit: 512
+    networks: [agent-internal]
+    depends_on:
+      anthropic-gateway: { condition: service_healthy }
+    volumes:
+      # Dev paths. Production mounts stores/<id>/sessions/<session-id>/{workspace,agent-state}.
+      - ./.dev/workspace:/workspace:rw
+      - ./.dev/agent-state:/agent-state:rw
+
+  shopify:
+    <<: *hardened
+    profiles: [tools]
+    image: shopify-builder/shopify:local
+    build:
+      context: ./shopify
+      args: { BASE_IMAGE: shopify-builder/base:local }
+    stdin_open: true
+    mem_limit: 1g
+    cpus: 1
+    networks: [egress]
+    # Production mounts per command: inbox (rw, pull) or canonical (ro, push/check). Never shared with the agent.
+    # Theme Check runs with network_mode none and SHOPIFY_HANDOFF=none.

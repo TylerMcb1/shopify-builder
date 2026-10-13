@@ -1,0 +1,9 @@
+{
+  "name": "shopify-builder",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "images:build": "docker build -t shopify-builder/base:local containers/base && docker compose -f containers/compose.yaml --profile agent --profile tools build",
+    "containers:test": "node --test \"containers/*/test/*.test.mjs\""
+  }
+}

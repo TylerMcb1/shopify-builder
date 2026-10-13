@@ -1,0 +1,1 @@
+["config/settings_data.json", "config/settings_schema.json", "templates/*.json", "templates/customers/*.json", "sections/*.json", "layout/*.liquid", "locales/*.json"]

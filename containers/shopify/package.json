@@ -1,0 +1,10 @@
+{
+  "name": "@shopify-builder/shopify-image",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@shopify/cli": "4.9.3",
+    "libsodium-wrappers": "0.8.4"
+  }
+}

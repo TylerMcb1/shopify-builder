@@ -1,0 +1,9 @@
+{
+  "name": "@shopify-builder/anthropic-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "libsodium-wrappers": "0.8.4"
+  }
+}
