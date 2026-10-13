@@ -4,6 +4,16 @@
   "private": true,
   "scripts": {
     "images:build": "docker build -t shopify-builder/base:local containers/base && docker compose -f containers/compose.yaml --profile agent --profile tools build",
-    "containers:test": "node --test \"containers/*/test/*.test.mjs\""
+    "containers:test": "node --test \"containers/*/test/*.test.mjs\"",
+    "host:test": "node --test \"packages/host/test/**/*.test.ts\"",
+    "host:test:docker": "SHOPIFY_BUILDER_DOCKER_TESTS=1 node --test packages/host/test/docker/real-docker.test.ts",
+    "host:typecheck": "npm --prefix packages/host run typecheck",
+    "desktop:dev": "npm --prefix apps/desktop run dev",
+    "desktop:test": "npm --prefix apps/desktop test",
+    "desktop:typecheck": "npm --prefix apps/desktop run typecheck",
+    "desktop:lint": "npm --prefix apps/desktop run lint",
+    "desktop:smoke": "npm --prefix apps/desktop run smoke",
+    "images:pin": "node scripts/pin-tool-images.mjs",
+    "test": "npm run containers:test && npm run host:test && npm run desktop:test"
   }
 }

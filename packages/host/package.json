@@ -1,0 +1,24 @@
+{
+  "name": "@shopify-builder/host",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Trusted host (Electron main process) services. Backend only; no renderer code.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dugite": "3.2.3",
+    "libsodium-wrappers": "0.8.4",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/libsodium-wrappers": "0.7.14",
+    "@types/node": "22.15.30",
+    "typescript": "5.8.3"
+  }
+}

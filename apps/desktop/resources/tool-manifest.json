@@ -1,0 +1,21 @@
+{
+  "minimumDockerVersion": "24.0.0",
+  "images": {
+    "base": {
+      "ref": "shopify-builder/base:local",
+      "id": "sha256:be94be503a8da4fecdba2fbcd671102d30cd5e9be6f8e0864b6c49bbb38dc653"
+    },
+    "agent": {
+      "ref": "shopify-builder/agent:local",
+      "id": "sha256:99abede3d386c5d3669f6f763729f71f06bae20230b5eb2024b3514c12999685"
+    },
+    "shopify": {
+      "ref": "shopify-builder/shopify:local",
+      "id": "sha256:70ebe2014aa1b445f5d62e16ac9a0c95f70409f335fc1bb06916ae2456a2782c"
+    },
+    "gateway": {
+      "ref": "shopify-builder/anthropic-gateway:local",
+      "id": "sha256:4ca665fc41ecc653dd3862fde93ea38346d471b4a4aee69155c0b5cc4636738c"
+    }
+  }
+}

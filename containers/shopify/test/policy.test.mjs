@@ -4,7 +4,26 @@ import { spawnSync } from 'node:child_process'
 import { checkArgs } from '../src/policy.mjs'
 
 test('allows the permitted theme commands', () => {
-  for (const sub of ['list', 'pull', 'push', 'check']) assert.equal(checkArgs(['theme', sub, '--json']), null)
+  for (const sub of ['list', 'push', 'check']) assert.equal(checkArgs(['theme', sub, '--json']), null)
+  assert.equal(checkArgs(['theme', 'pull', '--theme', '123', '--path', '/inbox', '--store', 'x.myshopify.com', '--no-color']), null)
+  assert.equal(checkArgs(['theme', 'pull', '--theme=123', '--path=/inbox']), null)
+})
+
+test('pull is only by numeric theme id into /inbox', () => {
+  assert.ok(checkArgs(['theme', 'pull', '--path', '/inbox'])) // no theme id
+  assert.ok(checkArgs(['theme', 'pull', '--theme', 'Dawn', '--path', '/inbox']))
+  assert.ok(checkArgs(['theme', 'pull', '--theme', '123', '--path', '/workspace']))
+  assert.ok(checkArgs(['theme', 'pull', '--theme', '123']))
+  assert.ok(checkArgs(['theme', 'pull', '--live', '--path', '/inbox']))
+  assert.ok(checkArgs(['theme', 'pull', '--theme', '1', '--theme', '2', '--path', '/inbox']))
+  assert.ok(checkArgs(['theme', 'pull', '--theme', '123', '--path', '/inbox', '--only', 'config/*']))
+})
+
+test('refuses flags that carry secrets or read theme-directory config', () => {
+  assert.ok(checkArgs(['theme', 'list', '--password', 'shptka_x']))
+  assert.ok(checkArgs(['theme', 'list', '--password=shptka_x']))
+  assert.ok(checkArgs(['theme', 'list', '--environment', 'prod']))
+  assert.ok(checkArgs(['theme', 'pull', '--theme', '1', '--path', '/inbox', '--force']))
 })
 
 test('refuses publish, live override, deletion and non-theme commands', () => {
