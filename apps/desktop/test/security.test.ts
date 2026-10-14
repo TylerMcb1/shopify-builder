@@ -90,7 +90,7 @@ test('packaged fuses disable Node and turn integrity checks on', () => {
   assert.equal(Object.keys(fuseOptions).length, 5)
 })
 
-test('preload exposes only the phase 1 channels and no shell', () => {
+test('preload exposes only the typed channels and no shell', () => {
   const preload = readFileSync(path.join(root, 'src/preload/index.ts'), 'utf8')
   assert.match(preload, /exposeInMainWorld\('shopifyBuilder'/)
   for (const name of Object.keys(ipcChannels) as (keyof typeof ipcChannels)[]) {
@@ -98,11 +98,31 @@ test('preload exposes only the phase 1 channels and no shell', () => {
   }
   assert.equal(preload.includes('ipcRenderer.invoke('), true)
   assert.equal(/invoke\(\s*['"`]/.test(preload), false)
+  assert.equal(/ipcRenderer\.on\(\s*['"`]/.test(preload), false)
+  assert.match(preload, /sessionEventChannel/)
   assert.equal(preload.includes('shell.'), false)
   assert.equal(preload.includes('child_process'), false)
   assert.equal(preload.includes("from 'fs'"), false)
   assert.equal(preload.includes('nodeIntegration'), false)
-  assert.deepEqual(ipcChannelNames, ['setup:getStatus', 'setup:retryDocker', 'links:open'])
+  const viteConfig = readFileSync(path.join(root, 'electron.vite.config.ts'), 'utf8')
+  assert.match(viteConfig, /externalizeDepsPlugin\(\{ exclude: \['zod'\] \}\)/)
+  assert.deepEqual(ipcChannelNames, [
+    'setup:getStatus',
+    'setup:retryDocker',
+    'links:open',
+    'session:start',
+    'session:sendMessage',
+    'session:decideApproval',
+    'session:answerQuestion',
+    'session:cancel',
+    'session:save',
+    'session:discard',
+    'session:undoStep',
+    'session:redo',
+    'session:readShot',
+    'store:connect',
+    'theme:pull',
+  ])
 })
 
 test('main keeps the security baseline and a single-instance lock', () => {

@@ -1,0 +1,9 @@
+{
+  "config/settings_data.json": "Your theme editor settings, such as colors, fonts, and section content.",
+  "config/settings_schema.json": "The list of settings available in the theme editor.",
+  "templates/*.json": "Page layouts and section content you set up in the theme editor.",
+  "templates/customers/*.json": "Page layouts and section content you set up in the theme editor.",
+  "sections/*.json": "Header and footer content you set up in the theme editor.",
+  "layout/*.liquid": "The master layout used by every page of your store.",
+  "locales/*.json": "Your store's text and translations, including edits made with 'Edit default theme content'."
+}

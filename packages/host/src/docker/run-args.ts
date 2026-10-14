@@ -8,11 +8,16 @@ export interface ShopifyRunSpec {
   containerName: string
   /** Host directory bind-mounted read-write at /inbox (pull only). */
   inboxHostPath?: string
+  /** Host directory bind-mounted read-only at /theme (push and Theme Check). */
+  themeHostPath?: string
+  /** Theme Check sets this so the entrypoint does not ask for a credential. */
+  handoff?: 'required' | 'none'
   /** Arguments passed to the container entrypoint, e.g. ['theme', 'list', '--json', ...]. */
   cliArgs: readonly string[]
 }
 
 export const INBOX_MOUNT_TARGET = '/inbox'
+export const THEME_MOUNT_TARGET = '/theme'
 const CONTAINER_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/
 
 export function buildShopifyRunArgs(spec: ShopifyRunSpec): string[] {
@@ -53,13 +58,25 @@ export function buildShopifyRunArgs(spec: ShopifyRunSpec): string[] {
     spec.network,
   ]
 
+  if (spec.handoff === 'none') args.push('-e', 'SHOPIFY_HANDOFF=none')
+
+  if (spec.inboxHostPath !== undefined && spec.themeHostPath !== undefined) {
+    throw new Error('a Shopify container mounts inbox or theme, not both')
+  }
   if (spec.inboxHostPath !== undefined) {
-    const source = spec.inboxHostPath
-    // --mount is comma-separated key=value; reject anything that could inject extra mount options.
-    if (!path.isAbsolute(source) || /[,"=\n\r]/.test(source)) throw new Error('invalid inbox path')
-    args.push('--mount', `type=bind,source=${source},target=${INBOX_MOUNT_TARGET}`)
+    args.push('--mount', bind(spec.inboxHostPath, INBOX_MOUNT_TARGET, false))
+  }
+  if (spec.themeHostPath !== undefined) {
+    args.push('--mount', bind(spec.themeHostPath, THEME_MOUNT_TARGET, true))
   }
 
   args.push(spec.image, ...spec.cliArgs)
   return args
+}
+
+function bind(source: string, target: string, readOnly: boolean): string {
+  // --mount is comma-separated key=value; reject anything that could inject extra mount options.
+  if (!path.isAbsolute(source) || /[,"=\n\r]/.test(source)) throw new Error('invalid mount path')
+  const mode = readOnly ? ',readonly' : ''
+  return `type=bind,source=${source},target=${target}${mode}`
 }

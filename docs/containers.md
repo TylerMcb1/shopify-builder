@@ -4,7 +4,7 @@ Three images share `containers/base` (Node slim, non-root uid 10001):
 
 | Image | Dir | Notes |
 |---|---|---|
-| Agent | `containers/agent` | Claude Agent SDK 0.3.296; no credentials; internal network only; stdin/stdout JSON protocol. Runner is a skeleton until Phase 3. |
+| Agent | `containers/agent` | Claude Agent SDK 0.3.296; no credentials; internal network only; stdin/stdout JSON protocol. The runner enforces the tool allowlist, sensitive-file approval, repair limit, and step timeout. |
 | Shopify | `containers/shopify` | Shopify CLI 4.9.3; one command per container; entrypoint allowlists `theme list/pull/push/check` and receives the token via the sealed-box handoff (`SHOPIFY_HANDOFF=none` for Theme Check). |
 | Anthropic gateway | `containers/anthropic-gateway` | Receives the key via handoff, forwards only `POST /v1/messages[/count_tokens]` to `api.anthropic.com`. |
 
@@ -27,6 +27,10 @@ The Theme Access password is requested from `getThemeToken()` only when the cont
 
 - Tests: `npm install` in `packages/host` (plus `npm ci` in `containers/shopify`), then `npm run host:test`. These use fake Docker and Shopify CLI fixtures that run the real container entrypoint and handoff, with no Docker or network needed.
 - Real image + store (opt-in): `SHOPIFY_STORE=x.myshopify.com SHOPIFY_THEME_TOKEN=... npm run host:test:docker`.
-- Not yet built: SQLite store records, Electron IPC.
+- Not yet built: SQLite store records, credential prompts, and the conversation screen.
+
+## Host: change sessions
+
+`createAgentSession` speaks the runner protocol over stdin and stdout. It copies `canonical/` into `sessions/<id>/workspace`, mounts only that directory and `agent-state/`, and validates every runner line. Sensitive-file descriptions come from `containers/agent/policy/sensitive-descriptions.json`, not from the model. A malformed line, a step timeout, or an idle timeout ends the session. Tests spawn the runner with a stand-in for Claude, not the SDK.
 
 Not yet verified: image builds and network isolation, because Docker was unavailable in the authoring environment.

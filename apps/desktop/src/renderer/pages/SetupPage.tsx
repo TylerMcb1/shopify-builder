@@ -22,10 +22,19 @@ const TONES = {
   mismatch: 'danger',
 } as const
 
-export function SetupPage() {
+export function SetupPage({
+  onStarted,
+}: {
+  onStarted: (session: { sessionId: string; storeDomain: string; themeId: number; themeLabel: string }) => void
+}) {
   const bridge = window.shopifyBuilder
   const queryClient = useQueryClient()
   const [linkError, setLinkError] = useState('')
+  const [domain, setDomain] = useState('')
+  const [password, setPassword] = useState('')
+  const [themeId, setThemeId] = useState('')
+  const [storeNote, setStoreNote] = useState('')
+  const [changeNote, setChangeNote] = useState('')
   const statusQuery = useQuery({
     queryKey: ['setup'],
     queryFn: () => {
@@ -91,8 +100,8 @@ export function SetupPage() {
           {(status?.images.images ?? placeholderImages()).map((image) => (
             <li key={image.name} className="flex items-center justify-between gap-4 px-4 py-3 text-sm">
               <span className="font-medium text-ink">{LABELS[image.name]}</span>
-              <span className="flex items-center gap-3 text-muted">
-                {image.message}
+              <span className="flex items-center gap-3">
+                {image.message !== badgeLabel(image.status) ? <span className="text-muted">{image.message}</span> : null}
                 <Badge tone={TONES[image.status]}>{badgeLabel(image.status)}</Badge>
               </span>
             </li>
@@ -117,10 +126,76 @@ export function SetupPage() {
           <Button variant="ghost" className="px-0" onClick={() => void open(EXTERNAL_LINKS.themeAccessHelp)}>
             How Theme Access passwords work
           </Button>
-          <Field id="store-domain" label="Store domain" disabled placeholder="your-store.myshopify.com" />
-          <Field id="theme-password" label="Theme Access password" type="password" disabled autoComplete="off" />
-          <Button disabled>Save</Button>
-          <p>Saving a store connection is not available yet.</p>
+          <Field
+            id="store-domain"
+            label="Store domain"
+            placeholder="your-store.myshopify.com"
+            value={domain}
+            autoComplete="off"
+            onChange={(event) => setDomain(event.target.value.trim())}
+          />
+          <Field
+            id="theme-password"
+            label="Theme Access password"
+            type="password"
+            autoComplete="off"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+          />
+          <Button
+            disabled={!bridge || !domain || !password}
+            onClick={() => {
+              if (!bridge) return
+              void bridge.connectStore(domain, password).then((result) => {
+                setPassword('')
+                setStoreNote(result.message ?? '')
+              })
+            }}
+          >
+            Save
+          </Button>
+          <p>{storeNote || 'The password is kept in memory for this run. It is not saved on disk.'}</p>
+        </Card>
+
+        <Card title="Make a change">
+          <p>Pull an unpublished theme, then describe the change. The theme has to be pulled before a change can start.</p>
+          <Field
+            id="theme-id"
+            label="Theme id"
+            inputMode="numeric"
+            value={themeId}
+            onChange={(event) => setThemeId(event.target.value.replace(/\D/g, ''))}
+          />
+          <div className="flex gap-2">
+            <Button
+              variant="secondary"
+              disabled={!bridge || !domain || !themeId}
+              onClick={() => {
+                if (!bridge) return
+                void bridge.pullTheme(domain, Number(themeId)).then((result) => setChangeNote(result.message ?? ''))
+              }}
+            >
+              Pull theme
+            </Button>
+            <Button
+              disabled={!bridge || !domain || !themeId}
+              onClick={() => {
+                if (!bridge) return
+                void bridge
+                  .startSession({ storeId: domain.split('.')[0] ?? '', themeId: Number(themeId), storeDomain: domain })
+                  .then((result) => {
+                    if (result.ok && result.sessionId) {
+                      onStarted({ sessionId: result.sessionId, storeDomain: domain, themeId: Number(themeId), themeLabel: domain })
+                      return
+                    }
+                    setChangeNote(result.message ?? '')
+                  })
+              }}
+            >
+              Start a change
+            </Button>
+          </div>
+          {changeNote ? <p>{changeNote}</p> : null}
         </Card>
       </div>
       {linkError ? <p className="mt-4 text-sm text-danger">{linkError}</p> : null}

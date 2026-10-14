@@ -12,9 +12,12 @@ const args = process.argv.slice(2)
 const refusal = checkArgs(args)
 if (refusal) fail(refusal)
 
-// Fail closed: a credential is required unless the host explicitly says none (Theme Check).
+// Theme Check is the only command that runs without a credential (README 11, 14.3).
+// Every other command fails closed until the sealed handoff succeeds.
 const mode = process.env.SHOPIFY_HANDOFF ?? 'required'
 if (mode !== 'required' && mode !== 'none') fail('invalid SHOPIFY_HANDOFF')
+if (args[1] === 'check' && mode !== 'none') fail('theme check does not take a credential')
+if (args[1] !== 'check' && mode !== 'required') fail('credential required')
 
 const env = { ...process.env }
 delete env.SHOPIFY_HANDOFF

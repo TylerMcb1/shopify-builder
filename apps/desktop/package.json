@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src test electron.vite.config.ts scripts",
     "test": "node --test \"test/**/*.test.ts\"",
-    "smoke": "electron-vite build && node scripts/smoke.mjs"
+    "smoke": "electron-vite build && node scripts/smoke.mjs",
+    "smoke:approval": "electron-vite build && node scripts/smoke.mjs approval"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.80.7",

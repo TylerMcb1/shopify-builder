@@ -25,7 +25,9 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
   },
   preload: {
-    plugins: [externalizeDepsPlugin()],
+    // The window is sandboxed, so the preload cannot require node_modules.
+    // Zod is bundled so every session event is checked before the page sees it.
+    plugins: [externalizeDepsPlugin({ exclude: ['zod'] })],
     build: {
       rollupOptions: {
         input: { index: resolve('src/preload/index.ts') },

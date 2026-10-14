@@ -1,1 +1,4 @@
-["layout/checkout.liquid", "**/checkout*"]
+[
+    "layout/checkout.liquid",
+    "**/checkout*"
+]

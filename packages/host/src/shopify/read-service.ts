@@ -48,6 +48,8 @@ export interface PullResult {
 export interface ShopifyReadService {
   listThemes(): Promise<Theme[]>
   pullTheme(themeId: number): Promise<PullResult>
+  /** Pull, intake, and record a sync commit without replacing canonical/ (README 13). */
+  syncTheme(themeId: number): Promise<{ theme: Theme; sync: SyncResult }>
 }
 
 export function createShopifyReadService(config: ShopifyReadServiceConfig): ShopifyReadService {
@@ -92,6 +94,23 @@ export function createShopifyReadService(config: ShopifyReadServiceConfig): Shop
   }
 
   const pullTheme = async (themeId: number): Promise<PullResult> => {
+    const pulled = await ingest(themeId, true)
+    return {
+      theme: pulled.theme,
+      sync: pulled.sync,
+      canonicalPath: themePaths(config.userDataDir, config.storeId, themeId).canonical,
+      files: pulled.files,
+      sensitiveFiles: pulled.sensitiveFiles,
+      rejected: pulled.rejected,
+    }
+  }
+
+  const syncTheme = async (themeId: number) => {
+    const pulled = await ingest(themeId, false)
+    return { theme: pulled.theme, sync: pulled.sync }
+  }
+
+  const ingest = async (themeId: number, replaceCanonical: boolean) => {
     try {
       assertThemeId(themeId)
     } catch {
@@ -101,7 +120,6 @@ export function createShopifyReadService(config: ShopifyReadServiceConfig): Shop
     inFlight.add(themeId)
     const paths = themePaths(config.userDataDir, config.storeId, themeId)
     try {
-      // Resolve by immutable ID against a fresh list; missing or duplicated IDs are rejected.
       const matches = (await listThemes()).filter((t) => t.id === themeId)
       if (matches.length !== 1) throw new HostError('theme-not-found', 'That theme could not be found in your store. It may have been deleted.')
       const theme = matches[0]!
@@ -134,12 +152,12 @@ export function createShopifyReadService(config: ShopifyReadServiceConfig): Shop
         await fs.rm(staging, { recursive: true, force: true }).catch(() => {})
         throw new HostError('history-failed', "Couldn't save this theme's history. Your files haven't changed.", (err as Error).message)
       }
-      await swapIntoCanonical(paths.themeDir, staging, paths.canonical)
+      if (replaceCanonical) await swapIntoCanonical(paths.themeDir, staging, paths.canonical)
+      else await fs.rm(staging, { recursive: true, force: true })
 
       return {
         theme,
         sync,
-        canonicalPath: paths.canonical,
         files: intake.accepted.map((f) => f.path).sort(),
         sensitiveFiles: intake.accepted.filter((f) => f.sensitive).map((f) => f.path).sort(),
         rejected: intake.rejected,
@@ -150,7 +168,7 @@ export function createShopifyReadService(config: ShopifyReadServiceConfig): Shop
     }
   }
 
-  return { listThemes, pullTheme }
+  return { listThemes, pullTheme, syncTheme }
 }
 
 /** Writes accepted files to a host-only staging tree; it becomes canonical/ only after the sync commit. */

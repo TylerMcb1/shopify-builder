@@ -28,6 +28,34 @@ test('mounts only the inbox, and only when given', () => {
   assert.equal(args[args.indexOf('--mount') + 1], 'type=bind,source=/data/stores/s/themes/1/inbox,target=/inbox')
 })
 
+test('mounts the theme read-only and can run theme check without a credential', () => {
+  const args = buildShopifyRunArgs({
+    ...base,
+    network: 'none',
+    themeHostPath: '/data/themes/1/canonical',
+    handoff: 'none',
+    cliArgs: ['theme', 'check'],
+  })
+  assert.equal(args[args.indexOf('--network') + 1], 'none')
+  assert.equal(args[args.indexOf('-e') + 1], 'SHOPIFY_HANDOFF=none')
+  assert.equal(
+    args[args.indexOf('--mount') + 1],
+    'type=bind,source=/data/themes/1/canonical,target=/theme,readonly',
+  )
+  assert.equal(args.includes('/inbox'), false)
+})
+
+test('a container mounts the inbox or the theme, not both', () => {
+  assert.throws(() =>
+    buildShopifyRunArgs({
+      ...base,
+      inboxHostPath: '/data/inbox',
+      themeHostPath: '/data/theme',
+      cliArgs: [],
+    }),
+  )
+})
+
 test('rejects mount paths that could inject options, and bad names', () => {
   for (const p of ['relative/inbox', '/a,readonly=false', '/a"b', '/a\nb', '/a=b']) {
     assert.throws(() => buildShopifyRunArgs({ ...base, inboxHostPath: p, cliArgs: [] }), p)

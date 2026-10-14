@@ -9,6 +9,22 @@ const flag = (name) => {
   return i === -1 ? undefined : args[i + 1]
 }
 
+if (args[0] === 'theme' && args[1] === 'check') {
+  if (process.env.SHOPIFY_CLI_THEME_TOKEN) {
+    process.stderr.write('theme check received a credential\n')
+    process.exit(1)
+  }
+  process.stdout.write(
+    JSON.stringify([
+      {
+        path: './sections/hero.liquid',
+        offenses: [{ check: 'SyntaxError', severity: 'error', message: 'Liquid did not parse.' }],
+      },
+    ]) + '\n',
+  )
+  process.exit(0)
+}
+
 if (!process.env.SHOPIFY_CLI_THEME_TOKEN || process.env.SHOPIFY_CLI_THEME_TOKEN !== process.env.FAKE_EXPECT_TOKEN) {
   process.stderr.write('Error: Invalid Theme Access password\n')
   process.exit(1)
@@ -64,6 +80,20 @@ if (args[0] === 'theme' && args[1] === 'pull') {
   }
   fs.symlinkSync('/etc/passwd', path.join(inbox, 'snippets', 'link.liquid'))
   process.stdout.write(`Theme pulled successfully (${flag('--theme')})\n`)
+  process.exit(0)
+}
+
+if (args[0] === 'theme' && args[1] === 'push') {
+  if (!args.includes('--nodelete') || !args.includes('--json') || flag('--path') !== '/theme') {
+    process.stderr.write('push rejected\n')
+    process.exit(1)
+  }
+  const development = args.includes('--development')
+  const unpublished = args.includes('--unpublished')
+  const id = development || unpublished ? 444 : Number(flag('--theme'))
+  const role = development ? 'development' : 'unpublished'
+  const name = unpublished ? flag('--theme') : 'Working'
+  process.stdout.write(JSON.stringify({ theme: { id, name, role, preview_url: 'https://evil.example/preview' } }) + '\n')
   process.exit(0)
 }
 

@@ -156,6 +156,64 @@ export function runWithSecretHandoff(opts: DockerRunOptions): Promise<DockerRunR
   })
 }
 
+/** Runs one container that does not take a secret. Theme Check uses this (README 11, 14.3). */
+export function runContainer(opts: {
+  args: readonly string[]
+  containerName: string
+  timeoutMs: number
+  dockerCommand?: string
+  dockerEnv?: NodeJS.ProcessEnv
+  maxOutputBytes?: number
+}): Promise<DockerRunResult> {
+  const docker = opts.dockerCommand ?? 'docker'
+  const maxOutput = opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT
+  return new Promise((resolve, reject) => {
+    const child = spawn(docker, opts.args, {
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: opts.dockerEnv ?? process.env,
+      windowsHide: true,
+    })
+    let settled = false
+    const stdout: Buffer[] = []
+    const stderr: Buffer[] = []
+    let outBytes = 0
+    const finish = (err: HostError | null, result?: DockerRunResult) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (err) {
+        child.kill('SIGKILL')
+        reject(err)
+      } else resolve(result!)
+    }
+    const timer = setTimeout(() => {
+      spawn(docker, ['rm', '-f', opts.containerName], {
+        shell: false,
+        stdio: 'ignore',
+        env: opts.dockerEnv ?? process.env,
+      }).on('error', () => {})
+      finish(new HostError('timeout', 'Shopify took too long to respond. Please try again.'))
+    }, opts.timeoutMs)
+    child.stdout.on('data', (chunk: Buffer) => {
+      outBytes += chunk.length
+      if (outBytes > maxOutput) return finish(new HostError('invalid-output', 'Shopify sent back more data than expected.'))
+      stdout.push(chunk)
+    })
+    child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk))
+    child.on('error', (err: NodeJS.ErrnoException) => {
+      finish(new HostError('docker-unavailable', 'Please open Docker Desktop, then click Retry.', err.code))
+    })
+    child.on('close', (code, signal) => {
+      finish(null, {
+        exitCode: code ?? (signal ? 1 : 0),
+        stdout: Buffer.concat(stdout).toString('utf8'),
+        stderr: redact(Buffer.concat(stderr).toString('utf8')),
+      })
+    })
+  })
+}
+
 export function parseEntrypointRefusal(stderr: string): string | null {
   for (const line of stderr.split('\n')) {
     try {

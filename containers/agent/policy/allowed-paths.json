@@ -1,1 +1,10 @@
-["assets/**", "blocks/**", "config/**", "layout/**", "locales/**", "sections/**", "snippets/**", "templates/**"]
+[
+    "assets/**",
+    "blocks/**",
+    "config/**",
+    "layout/**",
+    "locales/**",
+    "sections/**",
+    "snippets/**",
+    "templates/**"
+]

@@ -23,7 +23,7 @@ for (const flag of ['--rm', '-i', '--read-only', '--cap-drop', '--security-opt',
   if (!args.includes(flag)) die(`missing ${flag}`)
 }
 if (args.some((a) => /shptka_|sk-ant-|SHOPIFY_CLI_THEME_TOKEN/.test(a))) die('secret on the command line')
-if (args.includes('-e') || args.includes('--env')) die('environment passed to container')
+const handoffNone = allowHandoffNone(args)
 
 const image = process.env.FAKE_DOCKER_IMAGE ?? 'shopify-builder/shopify:test'
 const imageIdx = args.indexOf(image)
@@ -33,6 +33,23 @@ const inbox = mountIdx === -1 ? '' : (/source=([^,]+)/.exec(args[mountIdx + 1])?
 
 const child = spawn(process.execPath, [entrypoint, ...args.slice(imageIdx + 1)], {
   stdio: 'inherit',
-  env: { ...process.env, PATH: `${path.join(here, 'bin')}${path.delimiter}${process.env.PATH}`, FAKE_INBOX: inbox },
+  env: {
+    ...process.env,
+    PATH: `${path.join(here, 'bin')}${path.delimiter}${process.env.PATH}`,
+    FAKE_INBOX: inbox,
+    ...(handoffNone ? { SHOPIFY_HANDOFF: 'none' } : {}),
+  },
 })
 child.on('exit', (code) => process.exit(code ?? 1))
+
+/** Theme Check is the only container command allowed to set an environment variable. */
+function allowHandoffNone(argv) {
+  let enabled = false
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] !== '-e' && argv[i] !== '--env') continue
+    if (argv[i + 1] !== 'SHOPIFY_HANDOFF=none') die('environment passed to container')
+    enabled = true
+    i += 1
+  }
+  return enabled
+}
