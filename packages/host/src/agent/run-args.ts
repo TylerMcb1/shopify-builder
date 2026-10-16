@@ -4,6 +4,8 @@
 import path from 'node:path'
 
 export const AGENT_NETWORK_NAME = 'shopify-builder-agent-internal'
+export const GATEWAY_CONTAINER_NAME = 'sb-anthropic-gateway'
+export const GATEWAY_ALIAS = 'anthropic-gateway'
 export const AGENT_WORKSPACE_TARGET = '/workspace'
 export const AGENT_STATE_TARGET = '/agent-state'
 
@@ -85,6 +87,53 @@ export function interpretAgentNetwork(exitCode: number, stdout: string): 'ready'
   if (exitCode !== 0) return 'missing'
   if (stdout.trim() === 'true') return 'ready'
   return 'not-internal'
+}
+
+/** Long-running gateway. The API key arrives later on stdin, never in these arguments. */
+export function buildGatewayRunArgs(image: string): string[] {
+  if (!image || /[\s"'\\]/.test(image)) throw new Error('invalid image')
+  return [
+    'run',
+    '--rm',
+    '-i',
+    '--pull',
+    'never',
+    '--name',
+    GATEWAY_CONTAINER_NAME,
+    '--label',
+    'app=shopify-builder',
+    '--label',
+    'role=gateway',
+    '--user',
+    '10001:10001',
+    '--read-only',
+    '--cap-drop',
+    'ALL',
+    '--security-opt',
+    'no-new-privileges:true',
+    '--pids-limit',
+    '256',
+    '--memory',
+    '256m',
+    '--cpus',
+    '0.5',
+    '--tmpfs',
+    '/tmp:rw,noexec,nosuid,size=64m',
+    '--log-driver',
+    'none',
+    '--network',
+    'bridge',
+    image,
+  ]
+}
+
+/** Puts the gateway on the agent network under the name the agent already calls. */
+export function buildGatewayConnectArgs(): string[] {
+  return ['network', 'connect', '--alias', GATEWAY_ALIAS, AGENT_NETWORK_NAME, GATEWAY_CONTAINER_NAME]
+}
+
+export function buildGatewayRemoveArgs(): string[] {
+  return ['rm', '-f', GATEWAY_CONTAINER_NAME]
 }
 
 function mount(source: string, target: string): string {

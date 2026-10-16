@@ -1,0 +1,25 @@
+appId: com.shopifybuilder.app
+productName: Shopify Builder
+copyright: Copyright © Shopify Builder
+directories:
+  output: release
+files:
+  - out/**
+  - resources/**
+asar: true
+# Dugite runs its bundled git from app.asar.unpacked; a binary inside the archive cannot be spawned.
+asarUnpack:
+  - node_modules/dugite/git/**
+win:
+  target:
+    - nsis
+  # A release build is signed with the publisher certificate. This file is the installer
+  # definition. Producing the signed Windows package is a Windows release step.
+  signAndEditExecutable: true
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: false
+publish:
+  provider: generic
+  url: https://updates.example.com/shopify-builder/win

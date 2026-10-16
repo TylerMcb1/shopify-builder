@@ -32,6 +32,8 @@ export interface Records {
   saveBaseline(commitId: string, offenses: import('../validation/theme-check.ts').Offense[]): void
   saveChange(record: ChangeRecord): void
   getChange(changeId: string): ChangeRecord | null
+  listChanges(storeId: string): ChangeRecord[]
+  listOwnership(storeId: string): OwnershipRecord[]
   saveIncident(id: string, storeId: string, themeId: number, message: string, pushed: readonly string[]): void
   /** A save that was still running when the app stopped. */
   openJob(themeKey: string, sessionId: string): void
@@ -131,6 +133,18 @@ export function openRecords(userDataDir: string): Records {
         sensitiveFiles: Array.isArray(sensitive) ? sensitive.filter((item) => typeof item === 'string') : [],
       }
     },
+    listChanges(storeId) {
+      return db
+        .prepare('SELECT * FROM changes WHERE store_id = ? ORDER BY rowid DESC')
+        .all(storeId)
+        .map(changeFrom)
+    },
+    listOwnership(storeId) {
+      return db
+        .prepare('SELECT * FROM ownership WHERE store_id = ?')
+        .all(storeId)
+        .map(ownershipFrom)
+    },
     saveIncident(id, storeId, themeId, message, pushed) {
       db.prepare('INSERT INTO incidents (id, store_id, theme_id, message, pushed_json) VALUES (?, ?, ?, ?, ?)').run(
         id,
@@ -154,6 +168,18 @@ export function openRecords(userDataDir: string): Records {
       if (!row || typeof row.session_id !== 'string') return null
       return { sessionId: row.session_id }
     },
+  }
+}
+
+function changeFrom(row: Record<string, unknown>): ChangeRecord {
+  const sensitive: unknown = JSON.parse(String(row.sensitive_json))
+  return {
+    changeId: String(row.change_id),
+    storeId: String(row.store_id),
+    themeId: Number(row.theme_id),
+    commitId: String(row.commit_id),
+    title: String(row.title),
+    sensitiveFiles: Array.isArray(sensitive) ? sensitive.filter((item) => typeof item === 'string') : [],
   }
 }
 

@@ -11,6 +11,7 @@ import { createAgentSession, type AgentSession } from '../../src/agent/session.t
 import { SessionEventSchema, type SessionEvent } from '../../src/agent/protocol.ts'
 import { CHANGE_MESSAGES } from '../../src/change/messages.ts'
 import { createChangeLoop } from '../../src/change/loop.ts'
+import { HostError } from '../../src/errors.ts'
 import { createGit } from '../../src/git/git.ts'
 import { createHistoryService, type SyncResult } from '../../src/git/history.ts'
 import { createSessionHistory } from '../../src/git/session.ts'
@@ -266,9 +267,12 @@ test('two repairs that still fail restore the theme and do not save it', async (
   try {
     await mkdir(path.join(box.dir, 'agent-state'), { recursive: true })
     await session.ready
+    assert.equal(loop.retry().ok, false)
+    loop.noteUserMessage('Break the hero')
     assert.equal(session.sendUserMessage('Break the hero').ok, true)
     const blocked = await waitFor(events, 'validation_blocked')
     assert.equal(blocked.message, CHANGE_MESSAGES.blocked)
+    assert.equal(blocked.canRetry, true)
     assert.equal(await readFile(path.join(box.canonical, 'sections/hero.liquid'), 'utf8'), 'hello\n')
     assert.equal(await readFile(path.join(box.workspace, 'sections/hero.liquid'), 'utf8'), 'hello\n')
     assert.equal((await loop.save()).status, 'blocked')
@@ -407,10 +411,62 @@ test('overlapping Shopify edits that cannot merge do not push', async () => {
     assert.equal(pushes, 0)
     assert.equal(box.records.getJob(`${STORE}:${THEME_ID}`), null)
     const undone = await loop.undoStep()
-    assert.equal(undone.message, CHANGE_MESSAGES.restored)
+    assert.equal(undone.message, CHANGE_MESSAGES.stepUndone)
+    assert.ok(events.some((event) => event.type === 'step_undone'))
     assert.equal(await readFile(path.join(box.canonical, 'sections/hero.liquid'), 'utf8'), 'hello\n')
+    assert.equal((await loop.undoStep()).message, CHANGE_MESSAGES.nothingToUndo)
+    const fresh = await loop.redoOnLatest()
+    assert.equal(fresh.message, CHANGE_MESSAGES.startedOver)
+    assert.ok(events.some((event) => event.type === 'steps_cleared'))
+    assert.equal(await readFile(path.join(box.canonical, 'sections/hero.liquid'), 'utf8'), 'from shopify\n')
     await loop.discard()
     assert.ok(events.some((event) => event.type === 'discarded'))
+  } finally {
+    await rm(box.dir, { recursive: true, force: true })
+  }
+})
+
+test('a theme check that crashes rolls the step back and offers to try again', async () => {
+  const box = await seed()
+  const events: SessionEvent[] = []
+  const logs: string[] = []
+  const sent: string[] = []
+  const session = { ...stubSession(), sendUserMessage: (text: string) => (sent.push(text), { ok: true }) }
+  const loop = createChangeLoop({
+    storeId: STORE,
+    themeId: THEME_ID,
+    storeDomain: DOMAIN,
+    sessionId: SESSION,
+    workspace: box.workspace,
+    canonical: box.canonical,
+    gitDir: box.gitDir,
+    baseCommit: box.base,
+    send: (event) => events.push(event),
+    session,
+    history: box.sessions,
+    records: box.records,
+    log: (text) => logs.push(text),
+    ports: {
+      runThemeCheck: async () => {
+        throw new HostError('invalid-output', "Couldn't read the theme check result.", 'bad json')
+      },
+      syncTheme: async () => ({ created: false, commit: box.base, parent: null, tag: null, title: null, changes: [] }),
+      pushPreview: async () => 333,
+      pushSave: async () => working,
+    },
+  })
+  try {
+    loop.noteUserMessage('Add a heading')
+    await writeFile(path.join(box.workspace, 'sections/hero.liquid'), 'from session\n')
+    await loop.afterStep(step('Added a heading.'))
+    const blocked = await waitFor(events, 'validation_blocked')
+    assert.equal(blocked.message, CHANGE_MESSAGES.stepFailed)
+    assert.equal(blocked.canRetry, true)
+    assert.match(logs.join('\n'), /invalid-output.*bad json/)
+    assert.equal(await readFile(path.join(box.workspace, 'sections/hero.liquid'), 'utf8'), 'hello\n')
+    assert.equal((await loop.undoStep()).message, CHANGE_MESSAGES.nothingToUndo)
+    assert.equal(loop.retry().ok, true)
+    assert.match(sent.at(-1) ?? '', /Add a heading$/)
   } finally {
     await rm(box.dir, { recursive: true, force: true })
   }

@@ -16,7 +16,8 @@
     "desktop:smoke:approval": "npm --prefix apps/desktop run smoke:approval",
     "images:pin": "node scripts/pin-tool-images.mjs",
     "test": "npm run containers:test && npm run host:test && npm run desktop:test",
-    "test:phase45": "npm run containers:test && node --test packages/host/test/unit/theme-check.test.ts packages/host/test/unit/step-check.test.ts packages/host/test/unit/write-gateway.test.ts packages/host/test/unit/preview-url.test.ts packages/host/test/unit/session-history.test.ts packages/host/test/unit/records.test.ts packages/host/test/unit/run-args.test.ts packages/host/test/unit/shopify-runner.test.ts packages/host/test/integration/change-session.test.ts && npm --prefix apps/desktop test"
+    "test:phase45": "npm run containers:test && node --test packages/host/test/unit/theme-check.test.ts packages/host/test/unit/step-check.test.ts packages/host/test/unit/write-gateway.test.ts packages/host/test/unit/preview-url.test.ts packages/host/test/unit/session-history.test.ts packages/host/test/unit/records.test.ts packages/host/test/unit/run-args.test.ts packages/host/test/unit/shopify-runner.test.ts packages/host/test/integration/change-session.test.ts && npm --prefix apps/desktop test",
+    "test:phase67": "node --test packages/host/test/unit/credentials.test.ts packages/host/test/unit/retention.test.ts packages/host/test/unit/golive.test.ts packages/host/test/unit/updates.test.ts packages/host/test/unit/revert-change.test.ts && npm --prefix apps/desktop test"
   },
   "dependencies": {
     "zod": "4.6.7"

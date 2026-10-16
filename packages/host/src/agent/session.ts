@@ -38,6 +38,8 @@ export function createAgentSession(opts: {
   readyTimeoutMs?: number
   /** Extra stop, for example `docker kill`. The child is always killed too. */
   stop?: () => void
+  /** Why the session ended, for the main-process log. Never includes message contents. */
+  onDiagnostic?: (text: string) => void
 }): AgentSession {
   const stepBudget = opts.stepTimeoutMs ?? AGENT_STEP_TIMEOUT_MS
   const idleBudget = opts.idleTimeoutMs ?? AGENT_IDLE_TIMEOUT_MS
@@ -72,9 +74,19 @@ export function createAgentSession(opts: {
   // The caller may not be awaiting yet when a fast failure rejects this.
   readyPromise.catch(() => {})
 
-  const fail = (kind: 'malformed' | 'timeout' | 'idle' | 'cancelled') => {
+  let stderrTail = ''
+  const fail = (kind: 'malformed' | 'timeout' | 'idle' | 'cancelled', why?: string) => {
     if (ended) return
     ended = true
+    if (why && kind !== 'cancelled') {
+      const tail = stderrTail.trim()
+      const stderr = tail && !containsCredential(tail) ? `; stderr: ${tail}` : ''
+      try {
+        opts.onDiagnostic?.(`${why}${stderr}`)
+      } catch {
+        // Logging must not stop the shutdown.
+      }
+    }
     clearTimeout(stepTimer)
     clearTimeout(idleTimer)
     clearTimeout(readyTimer)
@@ -150,12 +162,14 @@ export function createAgentSession(opts: {
     stepTimer = undefined
   }
 
-  readyTimer = setTimeout(() => fail('malformed'), opts.readyTimeoutMs ?? AGENT_READY_TIMEOUT_MS)
+  readyTimer = setTimeout(() => fail('malformed', 'no ready message before the timeout'), opts.readyTimeoutMs ?? AGENT_READY_TIMEOUT_MS)
   resetIdle()
-  child.stderr?.on('data', () => {})
-  child.on('error', () => fail('malformed'))
-  child.on('exit', () => {
-    if (!ended) fail('malformed')
+  child.stderr?.on('data', (chunk: Buffer) => {
+    stderrTail = (stderrTail + chunk.toString('utf8')).slice(-2000)
+  })
+  child.on('error', (err) => fail('malformed', `process error: ${err.message}`))
+  child.on('exit', (code, signal) => {
+    if (!ended) fail('malformed', `process exited (code ${code ?? 'none'}, signal ${signal ?? 'none'})`)
   })
 
   if (!child.stdout) throw new Error('agent process has no stdout')
@@ -163,21 +177,25 @@ export function createAgentSession(opts: {
   rl.on('line', (line) => {
     if (ended) return
     resetIdle()
-    if (line.length > 1_000_000) return fail('malformed')
+    if (line.length > 1_000_000) return fail('malformed', 'output line too long')
     let raw: unknown
     try {
       raw = JSON.parse(line)
     } catch {
-      return fail('malformed')
+      return fail('malformed', 'output line was not JSON')
     }
     const parsed = RunnerMessageSchema.safeParse(raw)
-    if (!parsed.success) return fail('malformed')
+    if (!parsed.success) {
+      const type = raw && typeof raw === 'object' && typeof (raw as { type?: unknown }).type === 'string' ? (raw as { type: string }).type : 'unknown'
+      const issues = parsed.error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ')
+      return fail('malformed', `rejected "${type.slice(0, 40)}" message: ${issues.slice(0, 500)}`)
+    }
     onMessage(parsed.data)
   })
 
   function onMessage(message: ReturnType<typeof RunnerMessageSchema.parse>) {
     if (!ready) {
-      if (message.type !== 'ready') return fail('malformed')
+      if (message.type !== 'ready') return fail('malformed', `expected "ready" first, got "${message.type}"`)
       ready = true
       clearTimeout(readyTimer)
       write({ type: 'start', resume: opts.resume === true })

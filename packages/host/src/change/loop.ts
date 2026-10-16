@@ -45,12 +45,15 @@ export function createChangeLoop(opts: {
   history: SessionHistory
   records: Records
   ports: ChangePorts
+  /** Technical reason a step failed, for the main-process log. */
+  log?: (text: string) => void
 }) {
   const policy = loadPathPolicy()
   let seq = 0
   let base = opts.baseCommit
   let lastGood = opts.baseCommit
   let title = 'theme change'
+  let lastRequest = ''
   let validated = false
   let confirming = false
   const approved = new Set<string>()
@@ -147,7 +150,8 @@ export function createChangeLoop(opts: {
           }
           await restore(lastGood)
           validated = lastGood !== base
-          emit({ type: 'validation_blocked', message: CHANGE_MESSAGES.blocked })
+          opts.log?.(`step blocked by ${blocking.length} problem(s): ${blocking.slice(0, 5).map((o) => `${o.file} ${o.check}`).join('; ')}`)
+          emit({ type: 'validation_blocked', message: CHANGE_MESSAGES.blocked, canRetry: lastRequest.length > 0 })
           return
         }
         if (changed.length > 0) {
@@ -191,8 +195,10 @@ export function createChangeLoop(opts: {
       }
     } catch (err) {
       await restore(lastGood).catch(() => {})
-      const message = err instanceof HostError ? err.userMessage : CHANGE_MESSAGES.checkFailed
-      emit({ type: 'validation_blocked', message })
+      opts.log?.(
+        err instanceof HostError ? `step check failed: ${err.code}: ${err.userMessage} ${err.detail ?? ''}` : `step check failed: ${(err as Error).message}`,
+      )
+      emit({ type: 'validation_blocked', message: CHANGE_MESSAGES.stepFailed, canRetry: lastRequest.length > 0 })
     }
   }
 
@@ -285,7 +291,15 @@ export function createChangeLoop(opts: {
     save,
     noteUserMessage(text: string) {
       if (title === 'theme change') title = text
+      lastRequest = text
       confirming = false
+    },
+    retry(): SessionCommandResult {
+      if (!lastRequest) return { ok: false, message: CHANGE_MESSAGES.nothingToRetry }
+      const text =
+        'Your last attempt was undone, so the theme files are back to how they were. ' +
+        `Please make this change again, keeping it as simple as possible: ${lastRequest}`
+      return opts.session.sendUserMessage(text.slice(0, 8000))
     },
     decideApproval(requestId: string, decision: 'approve' | 'decline'): SessionCommandResult | null {
       if (!backstop || backstop.requestId !== requestId) return null
@@ -296,12 +310,13 @@ export function createChangeLoop(opts: {
     },
     async undoStep(): Promise<SessionCommandResult> {
       const rev = await opts.history.undoTurn(opts.gitDir, opts.sessionId, base)
-      if (!rev) return { ok: false, message: 'There is no step to undo.' }
+      if (!rev) return { ok: false, message: CHANGE_MESSAGES.nothingToUndo }
       lastGood = rev
       validated = rev !== base
       await restore(rev)
+      emit({ type: 'step_undone', message: CHANGE_MESSAGES.stepUndone })
       await opts.ports.pushPreview('mirror', [], opts.canonical).catch(() => {})
-      return { ok: true, message: CHANGE_MESSAGES.restored }
+      return { ok: true, message: CHANGE_MESSAGES.stepUndone }
     },
     async discard(): Promise<void> {
       const shopify = await opts.history.tip(opts.gitDir, SHOPIFY_REF)
@@ -319,7 +334,9 @@ export function createChangeLoop(opts: {
       validated = false
       confirming = false
       await restore(base)
-      return { ok: true, message: 'The latest theme files are ready. Describe the change again.' }
+      emit({ type: 'steps_cleared', message: CHANGE_MESSAGES.startedOver })
+      await opts.ports.pushPreview('mirror', [], opts.canonical).catch(() => {})
+      return { ok: true, message: CHANGE_MESSAGES.startedOver }
     },
     async recover(): Promise<void> {
       if (!opts.records.getJob(themeKey)) return

@@ -19,6 +19,21 @@ import {
 } from '../shared/contracts/setup.ts'
 import { isTrustedRendererUrl } from '../shared/security/baseline.ts'
 import { SESSION_MESSAGES } from '../../../../packages/host/src/agent/protocol.ts'
+import { CREDENTIAL_MESSAGES } from '../../../../packages/host/src/credentials/messages.ts'
+import {
+  ChatOpenSchema,
+  CredentialStatusSchema,
+  GoLiveViewSchema,
+  HistoryViewSchema,
+  RoleNoticeSchema,
+  UpdateStatusSchema,
+  type ChatOpen,
+  type CredentialStatus,
+  type GoLiveView,
+  type HistoryView,
+  type RoleNotice,
+  type UpdateStatus,
+} from '../shared/contracts/account.ts'
 
 export interface IpcHandlers {
   getAppUrl: () => string
@@ -33,9 +48,23 @@ export interface IpcHandlers {
   discardSession: () => Promise<SessionCommandResult>
   undoStep: () => Promise<SessionCommandResult>
   redoOnLatest: () => Promise<SessionCommandResult>
+  retryStep: () => Promise<SessionCommandResult>
   readShot: (page: string, viewport: 'desktop' | 'mobile', when: 'before' | 'after') => Promise<{ ok: true; dataUrl: string } | { ok: false; message: string }>
   connectStore: (domain: string, password: string) => Promise<SessionCommandResult>
   pullTheme: (domain: string, themeId: number) => Promise<SessionCommandResult>
+  saveKey: (key: string) => Promise<SessionCommandResult>
+  removeKey: () => Promise<SessionCommandResult>
+  credentialStatus: () => CredentialStatus
+  disconnectStore: () => SessionCommandResult
+  listHistory: () => HistoryView
+  openChat: (chatId: string) => ChatOpen | null
+  deleteChat: (chatId: string) => Promise<SessionCommandResult>
+  undoChange: (changeId: string) => Promise<SessionCommandResult>
+  checkGoLive: (themeId: number) => Promise<GoLiveView>
+  applyGoLive: (themeId: number, choice: 'live' | 'working') => Promise<SessionCommandResult>
+  watchThemes: () => Promise<RoleNotice>
+  startWorkingCopy: (themeId: number) => Promise<SessionCommandResult>
+  updateStatus: () => UpdateStatus
 }
 
 export function registerIpc(ipcMain: IpcMain, handlers: IpcHandlers): void {
@@ -105,6 +134,10 @@ export function registerIpc(ipcMain: IpcMain, handlers: IpcHandlers): void {
     guard(event)
     return command(await handlers.redoOnLatest())
   })
+  ipcMain.handle(ipcChannels.retryStep, async (event) => {
+    guard(event)
+    return command(await handlers.retryStep())
+  })
   ipcMain.handle(ipcChannels.readShot, async (event, raw: unknown) => {
     guard(event)
     const parsed = z
@@ -141,6 +174,74 @@ export function registerIpc(ipcMain: IpcMain, handlers: IpcHandlers): void {
       .safeParse(raw)
     if (!parsed.success) return command({ ok: false, message: SESSION_MESSAGES.unexpected })
     return command(await handlers.pullTheme(parsed.data.domain, parsed.data.themeId))
+  })
+  ipcMain.handle(ipcChannels.saveKey, async (event, raw: unknown) => {
+    guard(event)
+    const parsed = z.object({ key: z.string().min(1).max(300) }).strict().safeParse(raw)
+    if (!parsed.success) return command({ ok: false, message: CREDENTIAL_MESSAGES.badKey })
+    return command(await handlers.saveKey(parsed.data.key))
+  })
+  ipcMain.handle(ipcChannels.removeKey, async (event) => {
+    guard(event)
+    return command(await handlers.removeKey())
+  })
+  ipcMain.handle(ipcChannels.credentialStatus, async (event) => {
+    guard(event)
+    return CredentialStatusSchema.parse(handlers.credentialStatus())
+  })
+  ipcMain.handle(ipcChannels.disconnectStore, async (event) => {
+    guard(event)
+    return command(handlers.disconnectStore())
+  })
+  ipcMain.handle(ipcChannels.listHistory, async (event) => {
+    guard(event)
+    return HistoryViewSchema.parse(handlers.listHistory())
+  })
+  ipcMain.handle(ipcChannels.openChat, async (event, raw: unknown) => {
+    guard(event)
+    const parsed = z.object({ chatId: z.string().regex(/^[a-zA-Z0-9-]{8,80}$/) }).strict().safeParse(raw)
+    if (!parsed.success) return ChatOpenSchema.parse({ title: 'Chat', messages: [] })
+    return ChatOpenSchema.parse(handlers.openChat(parsed.data.chatId) ?? { title: 'Chat', messages: [] })
+  })
+  ipcMain.handle(ipcChannels.deleteChat, async (event, raw: unknown) => {
+    guard(event)
+    const parsed = z.object({ chatId: z.string().regex(/^[a-zA-Z0-9-]{8,80}$/) }).strict().safeParse(raw)
+    if (!parsed.success) return command({ ok: false, message: SESSION_MESSAGES.unexpected })
+    return command(await handlers.deleteChat(parsed.data.chatId))
+  })
+  ipcMain.handle(ipcChannels.undoChange, async (event, raw: unknown) => {
+    guard(event)
+    const parsed = z.object({ changeId: z.string().uuid() }).strict().safeParse(raw)
+    if (!parsed.success) return command({ ok: false, message: SESSION_MESSAGES.unexpected })
+    return command(await handlers.undoChange(parsed.data.changeId))
+  })
+  ipcMain.handle(ipcChannels.checkGoLive, async (event, raw: unknown) => {
+    guard(event)
+    const parsed = z.object({ themeId: z.number().int().positive() }).strict().safeParse(raw)
+    if (!parsed.success) {
+      return GoLiveViewSchema.parse({ items: [], liveFiles: [], conflicts: [], instructions: [], themesUrl: null })
+    }
+    return GoLiveViewSchema.parse(await handlers.checkGoLive(parsed.data.themeId))
+  })
+  ipcMain.handle(ipcChannels.applyGoLive, async (event, raw: unknown) => {
+    guard(event)
+    const parsed = z.object({ themeId: z.number().int().positive(), choice: z.enum(['live', 'working']) }).strict().safeParse(raw)
+    if (!parsed.success) return command({ ok: false, message: SESSION_MESSAGES.unexpected })
+    return command(await handlers.applyGoLive(parsed.data.themeId, parsed.data.choice))
+  })
+  ipcMain.handle(ipcChannels.watchThemes, async (event) => {
+    guard(event)
+    return RoleNoticeSchema.parse(await handlers.watchThemes())
+  })
+  ipcMain.handle(ipcChannels.startWorkingCopy, async (event, raw: unknown) => {
+    guard(event)
+    const parsed = z.object({ themeId: z.number().int().positive() }).strict().safeParse(raw)
+    if (!parsed.success) return command({ ok: false, message: SESSION_MESSAGES.unexpected })
+    return command(await handlers.startWorkingCopy(parsed.data.themeId))
+  })
+  ipcMain.handle(ipcChannels.updateStatus, async (event) => {
+    guard(event)
+    return UpdateStatusSchema.parse(handlers.updateStatus())
   })
 }
 

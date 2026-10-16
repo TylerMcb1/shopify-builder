@@ -7,7 +7,7 @@ import path from 'node:path'
 import { runWithSecretHandoff, parseEntrypointRefusal, type DockerRunResult } from '../docker/adapter.ts'
 import { buildShopifyRunArgs, INBOX_MOUNT_TARGET } from '../docker/run-args.ts'
 import { HostError } from '../errors.ts'
-import { createGit } from '../git/git.ts'
+import { createGit, GitCommandError } from '../git/git.ts'
 import { createHistoryService, type HistoryService, type SyncResult } from '../git/history.ts'
 import { intakeDirectory, IntakeLimitError, type IntakeLimits, type RejectedFile } from '../intake/intake.ts'
 import { loadPathPolicy, type PathPolicy } from '../intake/policy.ts'
@@ -149,8 +149,10 @@ export function createShopifyReadService(config: ShopifyReadServiceConfig): Shop
         history ??= createGit(config.userDataDir).then(createHistoryService)
         sync = await (await history).recordSync({ gitDir: paths.historyGit, treeDir: staging, files, source: theme })
       } catch (err) {
+        history = undefined
         await fs.rm(staging, { recursive: true, force: true }).catch(() => {})
-        throw new HostError('history-failed', "Couldn't save this theme's history. Your files haven't changed.", (err as Error).message)
+        const detail = err instanceof GitCommandError ? `${err.message}: ${err.stderr.trim()}` : (err as Error).message
+        throw new HostError('history-failed', "Couldn't save this theme's history. Your files haven't changed.", detail.slice(0, 2000))
       }
       if (replaceCanonical) await swapIntoCanonical(paths.themeDir, staging, paths.canonical)
       else await fs.rm(staging, { recursive: true, force: true })

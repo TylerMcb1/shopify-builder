@@ -340,3 +340,22 @@ async function scripted(
   await session.ready
   return { session, events, child: child as ChildProcess, name }
 }
+
+test('a ready message the host does not accept is logged with the reason', async () => {
+  const diagnostics: string[] = []
+  const events: SessionEvent[] = []
+  const session = createAgentSession({
+    sessionId: SESSION_ID,
+    readyTimeoutMs: 3000,
+    startProcess: () =>
+      spawn(process.execPath, ['-e', 'process.stderr.write("booting\\n"); console.log(JSON.stringify({ type: "ready", workspace: "/workspace" })); setInterval(() => {}, 1000)'], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }),
+    onEvent: (event) => events.push(event),
+    onDiagnostic: (text) => diagnostics.push(text),
+  })
+  await assert.rejects(session.ready, new Error(SESSION_MESSAGES.didNotStart))
+  assert.equal(diagnostics.length, 1)
+  assert.match(diagnostics[0]!, /rejected "ready" message/)
+  assert.match(diagnostics[0]!, /workspace/)
+})

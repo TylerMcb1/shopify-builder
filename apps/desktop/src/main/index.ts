@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, session, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeTheme, session, shell } from 'electron'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { checkDockerDesktop } from '../../../../packages/host/src/docker/status.ts'
@@ -6,17 +6,15 @@ import { checkToolImages, readToolManifest, type ToolManifest } from '../../../.
 import { SessionEventSchema } from '../../../../packages/host/src/agent/protocol.ts'
 import { LINK_DENIED, type OpenExternalResult } from '../shared/contracts/setup.ts'
 import { sessionEventChannel } from '../shared/contracts/channels.ts'
-import { palette } from '../shared/design/tokens.ts'
+import { darkPalette, palette } from '../shared/design/tokens.ts'
 import { contentSecurityPolicy, createWindowSecurityOptions } from '../shared/security/baseline.ts'
 import { classifyExternalUrl } from '../shared/security/links.ts'
 import { collectSetupStatus } from './foundation.ts'
 import { hardenWebContents, registerIpc } from './ipc.ts'
-import { createSessionBridge } from './session-bridge.ts'
-import { HostError } from '../../../../packages/host/src/errors.ts'
-import { CHANGE_MESSAGES } from '../../../../packages/host/src/change/messages.ts'
-import { openRecords } from '../../../../packages/host/src/records/store.ts'
-import { createShopifyReadService } from '../../../../packages/host/src/shopify/read-service.ts'
 import { capturePreview } from './preview-capture.ts'
+import { electronSecretCodec } from './secret-codec.ts'
+import { createAppServices } from './services.ts'
+import { createSessionBridge } from './session-bridge.ts'
 
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
@@ -33,27 +31,34 @@ if (!gotLock) {
     const appUrl = rendererUrl()
     const manifest = await loadManifest()
     installSessionPolicy(appUrl)
-    let themeToken = ''
-    let connectedDomain: string | null = null
+    const shopifyImage = manifest?.images.shopify.id ?? manifest?.images.shopify.ref ?? 'shopify-builder/shopify:local'
+    const services = createAppServices({
+      userDataDir: app.getPath('userData'),
+      shopifyImage,
+      gatewayImage: manifest?.images.gateway.id ?? manifest?.images.gateway.ref ?? 'shopify-builder/anthropic-gateway:local',
+      codec: electronSecretCodec(),
+      version: app.getVersion(),
+      capture: (pages, dir, when) => capturePreview(pages, dir, when),
+    })
     const bridge = createSessionBridge({
       userDataDir: app.getPath('userData'),
       image: manifest?.images.agent.id ?? manifest?.images.agent.ref ?? 'shopify-builder/agent:local',
       send: (event) => {
         for (const win of BrowserWindow.getAllWindows()) win.webContents.send(sessionEventChannel, event)
       },
+      prepareAgent: () => services.prepareAgent(),
+      onSessionEnded: () => services.stopGateway(),
       shopify: {
-        image: manifest?.images.shopify.id ?? manifest?.images.shopify.ref ?? 'shopify-builder/shopify:local',
-        getThemeToken: async () => {
-          if (!themeToken) throw new HostError('invalid-input', CHANGE_MESSAGES.connectStore)
-          return themeToken
-        },
+        image: shopifyImage,
+        getThemeToken: () => services.getThemeToken(),
         capture: (pages, dir, when) => capturePreview(pages, dir, when),
       },
     })
+    services.bindBusy(() => bridge.busy())
     registerIpc(ipcMain, {
       getAppUrl: () => appUrl,
       getSetupStatus: () => loadStatus(manifest),
-      openExternal: (url) => openAllowedLink(url, bridge.storeDomain() ?? connectedDomain),
+      openExternal: (url) => openAllowedLink(url, bridge.storeDomain() ?? services.storeDomain()),
       startSession: (input) => bridge.start(input),
       sendMessage: (text) => bridge.sendMessage(text),
       decideApproval: (requestId, decision) => bridge.decideApproval(requestId, decision),
@@ -63,48 +68,34 @@ if (!gotLock) {
       discardSession: () => bridge.discard(),
       undoStep: () => bridge.undoStep(),
       redoOnLatest: () => bridge.redoOnLatest(),
+      retryStep: () => bridge.retryStep(),
       readShot: (page, viewport, when) => bridge.readShot(page, viewport, when),
-      connectStore: async (domain, password) => {
-        themeToken = password
-        connectedDomain = domain
-        return { ok: true, message: 'Store connected for this run.' }
-      },
-      pullTheme: async (domain, themeId) => {
-        try {
-          if (!themeToken) return { ok: false, message: CHANGE_MESSAGES.connectStore }
-          const storeId = domain.split('.')[0] ?? ''
-          const read = createShopifyReadService({
-            userDataDir: app.getPath('userData'),
-            storeId,
-            storeDomain: domain,
-            image: manifest?.images.shopify.id ?? manifest?.images.shopify.ref ?? 'shopify-builder/shopify:local',
-            getThemeToken: async () => themeToken,
-          })
-          const pulled = await read.pullTheme(themeId)
-          if (pulled.theme.role === 'unpublished') {
-            openRecords(app.getPath('userData')).saveOwnership({
-              storeId,
-              themeId,
-              kind: 'working-copy',
-              name: pulled.theme.name,
-              originThemeId: null,
-              retired: false,
-            })
-          }
-          const note =
-            pulled.theme.role === 'unpublished'
-              ? `Pulled ${pulled.theme.name}.`
-              : `Pulled ${pulled.theme.name}. This theme can't be saved to.`
-          return { ok: true, message: note }
-        } catch (err) {
-          const message = err instanceof HostError ? err.userMessage : 'The theme could not be pulled.'
-          return { ok: false, message }
-        }
-      },
+      connectStore: (domain, password) => services.connectStore(domain, password),
+      pullTheme: (domain, themeId) => services.pullTheme(domain, themeId),
+      saveKey: (key) => services.saveKey(key),
+      removeKey: () => services.removeKey(),
+      credentialStatus: () => services.credentialStatus(),
+      disconnectStore: () => services.disconnectStore(),
+      listHistory: () => services.listHistory(),
+      openChat: (chatId) => services.openChat(chatId),
+      deleteChat: (chatId) => services.deleteChat(chatId),
+      undoChange: (changeId) => services.undoChange(changeId),
+      checkGoLive: (themeId) => services.checkGoLive(themeId),
+      applyGoLive: (themeId, choice) => services.applyGoLive(themeId, choice),
+      watchThemes: () => services.watchThemes(),
+      startWorkingCopy: (themeId) => services.startWorkingCopy(themeId),
+      updateStatus: () => services.updateStatus(),
     })
     const win = createWindow(appUrl)
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow(appUrl)
+    })
+    const retentionTimer = setInterval(() => {
+      void services.applyRetention()
+    }, 24 * 60 * 60 * 1000)
+    app.on('will-quit', () => {
+      clearInterval(retentionTimer)
+      void services.stopGateway()
     })
     const smoke = process.env['SHOPIFY_BUILDER_SMOKE']
     if (smoke === '1') watchSmoke(win)
@@ -139,13 +130,14 @@ function installSessionPolicy(appUrl: string): void {
 function createWindow(appUrl: string): BrowserWindow {
   const preload = path.join(__dirname, '../preload/index.cjs')
   const win = new BrowserWindow({
-    width: 960,
-    height: 800,
-    minWidth: 720,
-    minHeight: 640,
+    width: 1200,
+    height: 820,
+    minWidth: 880,
+    minHeight: 600,
     show: false,
     title: 'Shopify Builder',
-    backgroundColor: palette.background,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? darkPalette.background : palette.background,
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const } : {}),
     webPreferences: createWindowSecurityOptions(preload).webPreferences,
   })
   hardenWebContents(win.webContents, appUrl)
@@ -265,7 +257,7 @@ function watchApprovalSmoke(win: BrowserWindow): void {
         .catch(() => null)
       if (!report || !report.text.includes('Approve changes to important theme files?')) continue
       if (report.firstButton !== 'Decline') fail(report.text)
-      if (/publish|make live|replace live/i.test(report.text)) fail(report.text)
+      if (/\bpublish\b|make live|replace live/i.test(report.text)) fail(report.text)
       await win.webContents.executeJavaScript(
         `document.querySelector('[role="dialog"]').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`,
       )

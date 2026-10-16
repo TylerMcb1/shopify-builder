@@ -1,6 +1,6 @@
 // Starts one agent session from the main process (README 6.2). The renderer cannot supply mounts or docker arguments.
 import { spawn, type ChildProcess } from 'node:child_process'
-import { stat, readFile } from 'node:fs/promises'
+import { stat, readFile, cp } from 'node:fs/promises'
 import path from 'node:path'
 import { HostError } from '../../../../packages/host/src/errors.ts'
 import { randomUUID } from 'node:crypto'
@@ -16,7 +16,9 @@ import {
 import { createChangeLoop } from '../../../../packages/host/src/change/loop.ts'
 import { CHANGE_MESSAGES } from '../../../../packages/host/src/change/messages.ts'
 import { createGit } from '../../../../packages/host/src/git/git.ts'
-import { createSessionHistory } from '../../../../packages/host/src/git/session.ts'
+import { createSessionHistory, shortTitle } from '../../../../packages/host/src/git/session.ts'
+import { openChats } from '../../../../packages/host/src/history/chats.ts'
+import { todayUtc, type ChatLine } from '../../../../packages/host/src/history/retention.ts'
 import { openRecords } from '../../../../packages/host/src/records/store.ts'
 import { prepareSessionWorkspace, discardSessionDir } from '../../../../packages/host/src/agent/workspace.ts'
 import {
@@ -59,6 +61,10 @@ export function createSessionBridge(deps: {
   idleTimeoutMs?: number
   /** Real Shopify image. When set, steps are checked and saves go through the write gateway. */
   shopify?: ShopifyConnection
+  /** Starts the Claude gateway after the agent network exists. */
+  prepareAgent?: () => Promise<SessionCommandResult | void>
+  /** Stops the gateway when no session is left. */
+  onSessionEnded?: () => Promise<void>
 }): {
   start(input: StartSessionInput): Promise<SessionCommandResult>
   sendMessage(text: string): Promise<SessionCommandResult>
@@ -69,8 +75,10 @@ export function createSessionBridge(deps: {
   discard(): Promise<SessionCommandResult>
   undoStep(): Promise<SessionCommandResult>
   redoOnLatest(): Promise<SessionCommandResult>
+  retryStep(): Promise<SessionCommandResult>
   readShot(page: string, viewport: 'desktop' | 'mobile', when: 'before' | 'after'): Promise<{ ok: true; dataUrl: string } | { ok: false; message: string }>
   storeDomain(): string | null
+  busy(): boolean
 } {
   const docker = deps.dockerCommand ?? 'docker'
   let current: AgentSession | null = null
@@ -78,10 +86,38 @@ export function createSessionBridge(deps: {
   let paths: SessionPaths | null = null
   let domain: string | null = null
   let seq = 0
+  let lines: ChatLine[] = []
+  let chatTheme = 0
+  let chatId = ''
+
+  const remember = (role: ChatLine['role'], text: string) => {
+    const clean = text.replace(/\s+/g, ' ').trim().slice(0, 4000)
+    if (clean) lines.push({ role, text: clean })
+  }
 
   const publish = (event: SessionEvent) => {
+    if (event.type === 'assistant') remember('claude', event.text)
+    if (event.type === 'question') remember('claude', event.text)
+    if (event.type === 'step_ready') remember('claude', event.summary)
     seq += 1
     deps.send(SessionEventSchema.parse({ ...event, seq }))
+  }
+
+  async function finishSession(): Promise<void> {
+    if (chatId && lines.length > 0) {
+      if (paths) await cp(path.join(paths.sessionDir, 'shots'), path.join(deps.userDataDir, 'chats', chatId, 'shots'), { recursive: true }).catch(() => {})
+      openChats(deps.userDataDir).saveChat({
+        chatId,
+        themeId: chatTheme,
+        title: shortTitle(lines.find((line) => line.role === 'user')?.text ?? 'theme change'),
+        activeDay: todayUtc(),
+        messages: lines.slice(-200),
+      })
+    }
+    lines = []
+    chatId = ''
+    openChats(deps.userDataDir).clearSetting('open_session')
+    await deps.onSessionEnded?.().catch(() => {})
   }
 
   async function ensureNetwork(): Promise<void> {
@@ -97,6 +133,7 @@ export function createSessionBridge(deps: {
 
   return {
     storeDomain: () => domain,
+    busy: () => current !== null || loop !== null,
     async start(input) {
       const parsed = StartSessionInputSchema.safeParse(input)
       if (!parsed.success) return { ok: false, message: SESSION_MESSAGES.unexpected }
@@ -108,6 +145,11 @@ export function createSessionBridge(deps: {
         const theme = themePaths(deps.userDataDir, storeId, themeId)
         const canonical = await stat(theme.canonical).catch(() => null)
         if (!canonical?.isDirectory()) return { ok: false, message: 'Pull this theme before starting a change.' }
+        if (!deps.startProcess) await ensureNetwork()
+        if (deps.prepareAgent) {
+          const ready = await deps.prepareAgent()
+          if (ready && ready.ok === false) return ready
+        }
         paths = sessionPaths(deps.userDataDir, storeId, sessionId)
         publish(SessionEventSchema.parse({
           sessionId,
@@ -123,7 +165,10 @@ export function createSessionBridge(deps: {
           storeId,
           resume: Boolean(resumeSessionId),
         })
-        if (!deps.startProcess) await ensureNetwork()
+        chatId = sessionId
+        chatTheme = themeId
+        lines = []
+        openChats(deps.userDataDir).setSetting('open_session', JSON.stringify({ activeDay: todayUtc(), sessionDir: paths.sessionDir }))
         const launch = { sessionId, workspaceHostPath: paths.workspace, agentStateHostPath: paths.agentState }
         let active: ReturnType<typeof createChangeLoop> | null = null
         const session = createAgentSession({
@@ -132,6 +177,7 @@ export function createSessionBridge(deps: {
           readyTimeoutMs: deps.readyTimeoutMs,
           stepTimeoutMs: deps.stepTimeoutMs,
           idleTimeoutMs: deps.idleTimeoutMs,
+          onDiagnostic: (text) => console.error(`[shopify-builder] change assistant stopped: ${text}`),
           onEvent: (event) => {
             if (event.type === 'step_result' && active) {
               void active.afterStep(event)
@@ -141,6 +187,7 @@ export function createSessionBridge(deps: {
             if (event.type === 'error' && event.code !== 'model') {
               current = null
               loop = null
+              void finishSession()
             }
           },
           stop: deps.startProcess
@@ -202,6 +249,7 @@ export function createSessionBridge(deps: {
               session,
               history,
               records: openRecords(deps.userDataDir),
+              log: (text) => console.error(`[shopify-builder] ${text.slice(0, 2000)}`),
               ports: {
                 runThemeCheck: (dir) => runner.themeCheck(dir),
                 syncTheme: async () => (await read.syncTheme(themeId)).sync,
@@ -223,8 +271,10 @@ export function createSessionBridge(deps: {
               },
             })
             await active.recover()
-          } catch {
-            active = null
+          } catch (err) {
+            console.error(`[shopify-builder] change setup failed: ${err instanceof Error ? err.message : String(err)}`)
+            session.cancel()
+            throw new HostError('history-failed', "Couldn't open this theme's history, so the change can't start. Your files haven't changed.")
           }
         }
         current = session
@@ -233,6 +283,7 @@ export function createSessionBridge(deps: {
         if (active) void active.preparePreview()
         return { ok: true, sessionId }
       } catch (err) {
+        await deps.onSessionEnded?.().catch(() => {})
         if (current) {
           current.cancel()
           current = null
@@ -240,6 +291,7 @@ export function createSessionBridge(deps: {
         loop = null
         if (err instanceof HostError) return { ok: false, message: err.userMessage }
         const message = err instanceof Error ? err.message : ''
+        console.error(`[shopify-builder] start failed: ${message.slice(0, 2000)}`)
         if (message === SESSION_MESSAGES.didNotStart || message === SESSION_MESSAGES.malformed) {
           return { ok: false, message: SESSION_MESSAGES.didNotStart }
         }
@@ -248,6 +300,7 @@ export function createSessionBridge(deps: {
     },
     sendMessage(text) {
       if (!current) return Promise.resolve({ ok: false, message: SESSION_MESSAGES.noSession })
+      remember('user', text)
       loop?.noteUserMessage(text)
       return Promise.resolve(current.sendUserMessage(text))
     },
@@ -259,6 +312,7 @@ export function createSessionBridge(deps: {
     },
     answerQuestion(requestId, text) {
       if (!current) return Promise.resolve({ ok: false, message: SESSION_MESSAGES.noSession })
+      remember('user', text)
       return Promise.resolve(current.answerQuestion(requestId, text))
     },
     async cancel() {
@@ -266,6 +320,7 @@ export function createSessionBridge(deps: {
       current.cancel()
       current = null
       loop = null
+      await finishSession()
       return { ok: true }
     },
     async save() {
@@ -273,6 +328,7 @@ export function createSessionBridge(deps: {
       const result = await loop.save()
       if (result.status === 'saved') {
         current?.cancel()
+        await finishSession()
         if (paths) await discardSessionDir(paths).catch(() => {})
         current = null
         loop = null
@@ -284,6 +340,7 @@ export function createSessionBridge(deps: {
       if (!current && !loop) return { ok: false, message: SESSION_MESSAGES.noSession }
       await loop?.discard().catch(() => {})
       current?.cancel()
+      await finishSession()
       if (paths) await discardSessionDir(paths).catch(() => {})
       current = null
       loop = null
@@ -292,11 +349,25 @@ export function createSessionBridge(deps: {
     },
     async undoStep() {
       if (!loop) return { ok: false, message: SESSION_MESSAGES.noSession }
-      return loop.undoStep()
+      try {
+        return await loop.undoStep()
+      } catch (err) {
+        console.error(`[shopify-builder] undo failed: ${err instanceof Error ? err.message : String(err)}`)
+        return { ok: false, message: "That step couldn't be undone. Your theme hasn't changed." }
+      }
     },
     async redoOnLatest() {
       if (!loop) return { ok: false, message: SESSION_MESSAGES.noSession }
-      return loop.redoOnLatest()
+      try {
+        return await loop.redoOnLatest()
+      } catch (err) {
+        console.error(`[shopify-builder] start over failed: ${err instanceof Error ? err.message : String(err)}`)
+        return { ok: false, message: "Couldn't load the latest version from Shopify. Please try again." }
+      }
+    },
+    async retryStep() {
+      if (!loop || !current) return { ok: false, message: SESSION_MESSAGES.noSession }
+      return loop.retry()
     },
     async readShot(page, viewport, when) {
       if (!paths) return { ok: false, message: 'There is no preview yet.' }

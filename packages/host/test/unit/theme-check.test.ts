@@ -37,6 +37,22 @@ test('parses file reports and normalizes paths and severities', () => {
   ])
 })
 
+test('a real-theme-sized result with thousands of offenses per file and odd entries still parses', () => {
+  const locale = Array.from({ length: 1500 }, (_, i) => ({ check: 'MatchingTranslations', severity: 'error', message: `missing key ${i}` }))
+  const offenses = parseThemeCheckOutput(
+    JSON.stringify([
+      report('/theme/locales/ja.schema.json', locale),
+      report('/theme/sections/hero.liquid', [
+        { check: 'UndefinedObject', severity: 'warning', message: 'x'.repeat(900) },
+        { check: '', severity: 'warning', message: 'no check name' },
+      ]),
+    ]),
+  )
+  assert.equal(offenses.length, 1501)
+  assert.equal(offenses.at(-1)!.message.length, 500)
+  assert.throws(() => parseThemeCheckOutput('{"nothing":"useful"}'), /not a list of file reports/)
+})
+
 test('a new error blocks, a baseline error does not, and a parse error in a changed file still blocks', () => {
   const baseline = [
     { check: 'SyntaxError', file: 'sections/old.liquid', message: 'already there', severity: 'error' as const },

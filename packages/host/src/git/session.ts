@@ -3,6 +3,7 @@
 import { randomBytes } from 'node:crypto'
 import { mkdir, rm } from 'node:fs/promises'
 import path from 'node:path'
+import { listThemeFiles } from '../theme/files.ts'
 import { type Git } from './git.ts'
 import { SHOPIFY_REF, type FileChangeStatus } from './history.ts'
 
@@ -28,6 +29,21 @@ export interface SessionHistory {
   deleteBranch(gitDir: string, sessionId: string): Promise<void>
   materialize(gitDir: string, rev: string, dest: string): Promise<void>
   tip(gitDir: string, rev: string): Promise<string | null>
+  revertChange(
+    gitDir: string,
+    changeCommit: string,
+    title: string,
+  ): Promise<{ ok: true; commit: string; files: string[] } | { ok: false; files: string[] }>
+  moveShopify(gitDir: string, next: string, expected: string): Promise<void>
+  commitsAfter(gitDir: string, commit: string): Promise<string[]>
+  snapshotCommit(gitDir: string, treeDir: string): Promise<string>
+  mergeCommits(
+    gitDir: string,
+    base: string,
+    ours: string,
+    theirs: string,
+  ): Promise<{ ok: true; commit: string } | { ok: false; files: string[] }>
+  root(gitDir: string): Promise<string | null>
 }
 
 export function createSessionHistory(git: Git): SessionHistory {
@@ -153,6 +169,101 @@ export function createSessionHistory(git: Git): SessionHistory {
         await rm(indexFile, { force: true })
       }
     },
+    async revertChange(gitDir, changeCommit, title) {
+      if (!COMMIT.test(changeCommit)) throw new Error('invalid commit')
+      const parent = await tip(gitDir, `${changeCommit}^`)
+      const head = await tip(gitDir, SHOPIFY_REF)
+      if (!parent || !head) return { ok: false, files: [] }
+      const ancestor = await git.run(gitDir, ['merge-base', '--is-ancestor', changeCommit, SHOPIFY_REF], { okExitCodes: [1] })
+      if (ancestor.exitCode !== 0) return { ok: false, files: [] }
+      const introduced = parseNameStatus(
+        (await git.run(gitDir, ['diff-tree', '-r', '-z', '--no-renames', '--name-status', parent, changeCommit])).stdout,
+      )
+      const current = await lsTree(git, gitDir, head)
+      const next = new Map(current)
+      const conflicts: string[] = []
+      for (const change of introduced) {
+        const now = current.get(change.path) ?? null
+        const then = await blobAt(git, gitDir, changeCommit, change.path)
+        const before = await blobAt(git, gitDir, parent, change.path)
+        if (change.status === 'added') {
+          if (now === null) continue
+          if (now !== then) conflicts.push(change.path)
+          else next.delete(change.path)
+        } else if (now !== then) {
+          conflicts.push(change.path)
+        } else if (before) {
+          next.set(change.path, before)
+        } else {
+          next.delete(change.path)
+        }
+      }
+      if (conflicts.length > 0) return { ok: false, files: conflicts }
+      const tree = await writeTree(git, gitDir, next)
+      const commit = (await text(gitDir, ['commit-tree', tree, '-p', head, '-m', `revert: ${title}`])).trim()
+      await git.run(gitDir, ['update-ref', SHOPIFY_REF, commit, head])
+      return { ok: true, commit, files: introduced.map((change) => change.path) }
+    },
+    async moveShopify(gitDir, next, expected) {
+      if (!COMMIT.test(next) || !COMMIT.test(expected)) throw new Error('invalid commit')
+      await git.run(gitDir, ['update-ref', SHOPIFY_REF, next, expected])
+    },
+    async commitsAfter(gitDir, commit) {
+      if (!COMMIT.test(commit)) throw new Error('invalid commit')
+      const out = await text(gitDir, ['rev-list', `${commit}..${SHOPIFY_REF}`])
+      return out ? out.split('\n').filter(Boolean) : []
+    },
+    async snapshotCommit(gitDir, treeDir) {
+      const files = await listThemeFiles(treeDir)
+      if (files.length === 0) throw new Error('theme has no files')
+      const tree = await treeForFiles(gitDir, treeDir, files)
+      return text(gitDir, ['commit-tree', tree, '-m', 'snapshot'])
+    },
+    async mergeCommits(gitDir, base, ours, theirs) {
+      for (const commit of [base, ours, theirs]) {
+        if (!COMMIT.test(commit)) throw new Error('invalid commit')
+      }
+      const result = await git.run(
+        gitDir,
+        ['merge-tree', '--write-tree', '--name-only', `--merge-base=${base}`, ours, theirs],
+        { okExitCodes: [1] },
+      )
+      const lines = result.stdout
+        .toString('utf8')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+      const tree = lines[0] ?? ''
+      if (!COMMIT.test(tree)) throw new Error('merge produced no tree')
+      if (result.exitCode !== 0) return { ok: false, files: lines.slice(1) }
+      const commit = await text(gitDir, ['commit-tree', tree, '-p', ours, '-m', 'merge: live theme'])
+      return { ok: true, commit }
+    },
+    async root(gitDir) {
+      const out = await text(gitDir, ['rev-list', '--max-parents=0', SHOPIFY_REF])
+      const commit = out.split('\n').filter(Boolean)[0] ?? ''
+      return COMMIT.test(commit) ? commit : null
+    },
+  }
+}
+
+async function blobAt(git: Git, gitDir: string, rev: string, file: string): Promise<string | null> {
+  const result = await git.run(gitDir, ['rev-parse', '--verify', '--quiet', `${rev}:${file}`], { okExitCodes: [1] })
+  const value = result.stdout.toString('utf8').trim()
+  return value || null
+}
+
+const COMMIT = /^[0-9a-f]{40,64}$/
+
+async function writeTree(git: Git, gitDir: string, entries: Map<string, string>): Promise<string> {
+  const indexFile = path.join(path.dirname(gitDir), `.index-${randomBytes(6).toString('hex')}`)
+  try {
+    const records = [...entries.entries()].map(([file, hash]) => `100644 ${hash}\t${file}\0`).join('')
+    if (records) await git.run(gitDir, ['update-index', '-z', '--index-info'], { stdin: records, indexFile })
+    else await git.run(gitDir, ['read-tree', '--empty'], { indexFile })
+    return (await git.run(gitDir, ['write-tree'], { indexFile })).stdout.toString('utf8').trim()
+  } finally {
+    await rm(indexFile, { force: true })
   }
 }
 

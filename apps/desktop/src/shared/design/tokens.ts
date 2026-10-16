@@ -12,3 +12,18 @@ export const palette = {
   error: '#D72C0D',
   focusRing: '#2C6ECB',
 } as const
+
+/** Dark appearance. Same roles, tuned for contrast on dark surfaces. */
+export const darkPalette = {
+  primary: '#1F9F74',
+  primaryHover: '#27B383',
+  primarySubtle: '#133328',
+  background: '#161718',
+  surface: '#1F2022',
+  textPrimary: '#ECECED',
+  textSecondary: '#9C9EA3',
+  border: '#34363A',
+  warning: '#E2B33C',
+  error: '#FF6B52',
+  focusRing: '#5C9DFF',
+} as const

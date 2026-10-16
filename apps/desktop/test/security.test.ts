@@ -119,9 +119,23 @@ test('preload exposes only the typed channels and no shell', () => {
     'session:discard',
     'session:undoStep',
     'session:redo',
+    'session:retry',
     'session:readShot',
     'store:connect',
     'theme:pull',
+    'credentials:saveKey',
+    'credentials:removeKey',
+    'credentials:status',
+    'store:disconnect',
+    'history:list',
+    'history:open',
+    'history:deleteChat',
+    'history:undoChange',
+    'golive:check',
+    'golive:apply',
+    'themes:watch',
+    'themes:newCopy',
+    'updates:status',
   ])
 })
 

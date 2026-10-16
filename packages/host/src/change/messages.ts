@@ -1,6 +1,11 @@
 // Plain-language sentences for validation, drift, and save (README 10.5, 13, 22).
 export const CHANGE_MESSAGES = {
-  blocked: "I couldn't make this change without errors. Your theme hasn't changed.",
+  blocked: "I couldn't make this change without errors, so I put everything back. Your theme hasn't changed.",
+  stepFailed: 'Something went wrong while checking this change, so I put everything back. Your theme hasn\'t changed.',
+  stepUndone: 'I undid that step. Your theme is back to how it was before it.',
+  nothingToUndo: 'There is no step to undo.',
+  startedOver: 'I loaded the latest version of your theme from Shopify. Describe the change again.',
+  nothingToRetry: 'Describe the change again below.',
   driftConflict:
     'This theme was changed in Shopify while you were working, in the same places your change affects.',
   driftConfirm: 'Shopify changed some of the same files. I merged those edits. Look at the preview, then save again.',

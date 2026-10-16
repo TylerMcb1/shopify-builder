@@ -153,7 +153,16 @@ export const SessionEventSchema = z.discriminatedUnion('type', [
       sensitiveApproved: z.array(ThemePathSchema).max(50),
     })
     .strict(),
-  z.object({ ...identity, type: z.literal('validation_blocked'), message: z.string().min(1).max(400) }).strict(),
+  z
+    .object({
+      ...identity,
+      type: z.literal('validation_blocked'),
+      message: z.string().min(1).max(400),
+      canRetry: z.boolean().optional(),
+    })
+    .strict(),
+  z.object({ ...identity, type: z.literal('step_undone'), message: z.string().min(1).max(400) }).strict(),
+  z.object({ ...identity, type: z.literal('steps_cleared'), message: z.string().min(1).max(400) }).strict(),
   z.object({
     ...identity,
     type: z.literal('preview_ready'),
