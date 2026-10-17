@@ -120,6 +120,7 @@ export function runEngine(opts) {
 
   async function beginTurn(message, repair) {
     if (busy) {
+      opts.log?.('turn refused: a turn is already running')
       send({ type: 'error', code: 'model', message: 'A change is already running.' })
       return
     }
@@ -176,7 +177,10 @@ export function runEngine(opts) {
       })
     } catch (err) {
       if (err?.code === 'timeout' || err?.code === 'cancelled' || turnAbort.signal.aborted) sendTurnAbort()
-      else send({ type: 'error', code: 'model', message: MODEL_MESSAGE })
+      else {
+        opts.log?.(`turn failed: ${String(err?.stack ?? err?.message ?? err).slice(0, 1500)}`)
+        send({ type: 'error', code: 'model', message: MODEL_MESSAGE })
+      }
     } finally {
       clearTimeout(turnTimer)
       busy = false

@@ -472,6 +472,84 @@ test('a theme check that crashes rolls the step back and offers to try again', a
   }
 })
 
+test('try again after a repaired step fails its check starts a new attempt', async () => {
+  const box = await seed()
+  const events: SessionEvent[] = []
+  let child: ChildProcess | undefined
+  let checks = 0
+  let loop!: ReturnType<typeof createChangeLoop>
+  const session = createAgentSession({
+    sessionId: SESSION,
+    stepTimeoutMs: 5000,
+    idleTimeoutMs: 5000,
+    readyTimeoutMs: 3000,
+    startProcess: () => {
+      child = spawn(process.execPath, [runner], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: {
+          PATH: process.env.PATH,
+          TMPDIR: box.dir,
+          AGENT_TEST_RUNTIME: '1',
+          AGENT_RUNTIME_MODULE: fixture,
+          AGENT_SCENARIO: 'theme-step',
+          POLICY_DIR: policyDir,
+          WORKSPACE_DIR: box.workspace,
+          AGENT_STATE_DIR: path.join(box.dir, 'agent-state'),
+        },
+      })
+      return child
+    },
+    onEvent: (event) => {
+      if (event.type === 'step_result') {
+        void loop.afterStep(event)
+        return
+      }
+      events.push(event)
+    },
+  })
+  loop = createChangeLoop({
+    storeId: STORE,
+    themeId: THEME_ID,
+    storeDomain: DOMAIN,
+    sessionId: SESSION,
+    workspace: box.workspace,
+    canonical: box.canonical,
+    gitDir: box.gitDir,
+    baseCommit: box.base,
+    send: (event) => events.push(event),
+    session,
+    history: box.sessions,
+    records: box.records,
+    ports: {
+      runThemeCheck: async (dir) => {
+        checks += 1
+        if (checks === 3) throw new HostError('invalid-output', "Couldn't read the theme check result.")
+        return themeCheck(dir)
+      },
+      syncTheme: async () => ({ created: false, commit: box.base, parent: null, tag: null, title: null, changes: [] }),
+      pushPreview: async () => 333,
+      pushSave: async () => working,
+    },
+  })
+  try {
+    await mkdir(path.join(box.dir, 'agent-state'), { recursive: true })
+    await session.ready
+    loop.noteUserMessage('Update the hero')
+    assert.equal(session.sendUserMessage('Update the hero').ok, true)
+    const blocked = await waitFor(events, 'validation_blocked')
+    assert.equal(blocked.message, CHANGE_MESSAGES.stepFailed)
+    const thinking = events.filter((event) => event.type === 'progress' && event.stage === 'thinking').length
+    const retried = loop.retry()
+    assert.deepEqual(retried, { ok: true })
+    await waitFor(events, 'step_ready')
+    assert.ok(events.filter((event) => event.type === 'progress' && event.stage === 'thinking').length > thinking)
+  } finally {
+    session.cancel()
+    if (child) await exited(child).catch(() => undefined)
+    await rm(box.dir, { recursive: true, force: true })
+  }
+})
+
 function step(summary: string): Extract<SessionEvent, { type: 'step_result' }> {
   return SessionEventSchema.parse({
     sessionId: SESSION,

@@ -32,7 +32,9 @@ export class GitCommandError extends Error {
   readonly exitCode: number
   readonly stderr: string
   constructor(args: readonly string[], exitCode: number, stderr: string) {
-    super(`git ${args[0] ?? ''} failed with exit code ${exitCode}`)
+    const command = args.find((arg, i) => !arg.startsWith('-') && args[i - 1] !== '-c' && args[i - 1] !== '--work-tree') ?? ''
+    const reason = stderr.trim().split('\n').filter(Boolean).slice(-3).join(' | ').slice(0, 600)
+    super(`git ${command} failed with exit code ${exitCode}${reason ? `: ${reason}` : ''}`)
     this.name = 'GitCommandError'
     this.exitCode = exitCode
     this.stderr = stderr

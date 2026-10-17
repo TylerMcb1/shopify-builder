@@ -244,6 +244,13 @@ export function createAgentSession(opts: {
     if (message.type === 'error') {
       if (message.code === 'model') {
         clearStep()
+        const tail = stderrTail.trim()
+        stderrTail = ''
+        try {
+          opts.onDiagnostic?.(`step ended with a model error${tail && !containsCredential(tail) ? `; stderr: ${tail}` : ''}`)
+        } catch {
+          // Logging must not change the session.
+        }
         const text = presentText(message.message) ?? SESSION_MESSAGES.model
         emit({ type: 'error', code: 'model', message: text })
         return

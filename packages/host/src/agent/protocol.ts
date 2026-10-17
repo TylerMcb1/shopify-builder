@@ -10,7 +10,7 @@ export function isThemePath(value: string): boolean {
   if (value.startsWith('/') || value.includes('\\') || value.includes('\0') || value.includes('//')) return false
   return value.split('/').every((part) => {
     if (part.length === 0 || part === '.' || part === '..' || part.startsWith('.')) return false
-    return /^[a-zA-Z0-9_-]+(\.[a-zA-Z0-9_-]+)*$/.test(part)
+    return /^[a-zA-Z0-9_-]+([ .][a-zA-Z0-9_-]+)*$/.test(part)
   })
 }
 

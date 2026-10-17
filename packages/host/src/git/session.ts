@@ -1,7 +1,7 @@
 // Session branches, turn commits, drift merges, and the squash that becomes a saved change
 // (README 12.2, 12.3, 13, 8.5). Git runs only on the host, through the hardened runner.
 import { randomBytes } from 'node:crypto'
-import { mkdir, rm } from 'node:fs/promises'
+import { mkdir, readdir, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { listThemeFiles } from '../theme/files.ts'
 import { type Git } from './git.ts'
@@ -158,8 +158,13 @@ export function createSessionHistory(git: Git): SessionHistory {
       if (await tip(gitDir, ref)) await git.run(gitDir, ['update-ref', '-d', ref])
     },
     async materialize(gitDir, rev, dest) {
-      await rm(dest, { recursive: true, force: true })
+      // Empty the folder but keep the folder itself. The agent container bind-mounts the
+      // workspace as its working directory, so removing the folder makes that process's
+      // current directory disappear and every later step fails.
       await mkdir(dest, { recursive: true })
+      for (const name of await readdir(dest)) {
+        await rm(path.join(dest, name), { recursive: true, force: true })
+      }
       const indexFile = path.join(path.dirname(gitDir), `.index-${randomBytes(6).toString('hex')}`)
       try {
         await git.run(gitDir, ['read-tree', rev], { indexFile })

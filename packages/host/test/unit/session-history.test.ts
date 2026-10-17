@@ -1,6 +1,6 @@
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { createGit, type Git } from '../../src/git/git.ts'
 import { createHistoryService, SHOPIFY_REF } from '../../src/git/history.ts'
@@ -95,6 +95,14 @@ test('turns, drift merges, and the saved change keep Shopify edits the session d
 
   const dest = path.join(root, 'materialized')
   await sessions.materialize(gitDir, SHOPIFY_REF, dest)
+  assert.equal(readFileSync(path.join(dest, 'sections/footer.liquid'), 'utf8'), '<footer>shop</footer>\n')
+  const folder = statSync(dest).ino
+  writeFileSync(path.join(dest, 'leftover.txt'), 'not in the theme')
+  mkdirSync(path.join(dest, 'old-dir'))
+  await sessions.materialize(gitDir, SHOPIFY_REF, dest)
+  assert.equal(statSync(dest).ino, folder)
+  assert.equal(existsSync(path.join(dest, 'leftover.txt')), false)
+  assert.equal(existsSync(path.join(dest, 'old-dir')), false)
   assert.equal(readFileSync(path.join(dest, 'sections/footer.liquid'), 'utf8'), '<footer>shop</footer>\n')
   await sessions.deleteBranch(gitDir, SESSION)
   assert.equal(await sessions.tip(gitDir, sessionRef(SESSION)), null)

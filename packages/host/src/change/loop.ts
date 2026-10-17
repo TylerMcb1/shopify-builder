@@ -294,6 +294,10 @@ export function createChangeLoop(opts: {
       lastRequest = text
       confirming = false
     },
+    /** A turn that ended without a result may have left half-made edits in the workspace. */
+    async abandonStep(): Promise<void> {
+      await restore(lastGood).catch((err) => opts.log?.(`restore after a failed turn failed: ${(err as Error).message}`))
+    },
     retry(): SessionCommandResult {
       if (!lastRequest) return { ok: false, message: CHANGE_MESSAGES.nothingToRetry }
       const text =

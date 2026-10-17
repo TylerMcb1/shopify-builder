@@ -3,19 +3,19 @@
   "images": {
     "base": {
       "ref": "shopify-builder/base:local",
-      "id": "sha256:abe7983b037f5b054047f6bbc72bb9300c0551c4191ea112d5b78306bd1cdfe1"
+      "id": "sha256:deff652fe49a4b1c7b37ef8fdf1e8b803899c5d45581baeb19e22e0e24c61f7f"
     },
     "agent": {
       "ref": "shopify-builder/agent:local",
-      "id": "sha256:df119eb8d4cc23eb6b3b21e72306fcbd6d00febd02ea617b27b5df3ec669b4ac"
+      "id": "sha256:509d161df38459546a7bbf750f7c4daa45fa2313e0e1491dca181772a2b84d48"
     },
     "shopify": {
       "ref": "shopify-builder/shopify:local",
-      "id": "sha256:6fc403122eb3d08b4d5d3b9b361545e03dc481d77b84229c4923dc824102e2ec"
+      "id": "sha256:9969b62e3f4e095c6226d188f3262b3e7702d38e50bd6bec23a216ebead55f0c"
     },
     "gateway": {
       "ref": "shopify-builder/anthropic-gateway:local",
-      "id": "sha256:12e747031ed20a4b1e4f2bbc94704b23d2f8b0b6b1c58aee19c4b988a5a7936c"
+      "id": "sha256:f0a4d99e326a45f3b141dbe69bfeedc117f50560b15c36731de75644d4975c7a"
     }
   }
 }

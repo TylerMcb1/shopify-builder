@@ -44,6 +44,8 @@ const engine = runEngine({
   agentStateDir,
   systemPrompt: buildSystemPrompt(instructions, policy),
   limits,
+  // The container holds no credentials; stderr reaches only the host's main-process log.
+  log: (text) => process.stderr.write(`${text}\n`),
   onCancel: () => process.exit(0),
 })
 

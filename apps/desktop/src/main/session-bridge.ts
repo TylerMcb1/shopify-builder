@@ -177,12 +177,13 @@ export function createSessionBridge(deps: {
           readyTimeoutMs: deps.readyTimeoutMs,
           stepTimeoutMs: deps.stepTimeoutMs,
           idleTimeoutMs: deps.idleTimeoutMs,
-          onDiagnostic: (text) => console.error(`[shopify-builder] change assistant stopped: ${text}`),
+          onDiagnostic: (text) => console.error(`[shopify-builder] change assistant: ${text.slice(0, 2500)}`),
           onEvent: (event) => {
             if (event.type === 'step_result' && active) {
               void active.afterStep(event)
               return
             }
+            if (event.type === 'error' && active) void active.abandonStep()
             publish(event)
             if (event.type === 'error' && event.code !== 'model') {
               current = null
@@ -366,8 +367,13 @@ export function createSessionBridge(deps: {
       }
     },
     async retryStep() {
-      if (!loop || !current) return { ok: false, message: SESSION_MESSAGES.noSession }
-      return loop.retry()
+      if (!loop || !current) {
+        console.error('[shopify-builder] try again refused: the change assistant is no longer running')
+        return { ok: false, message: SESSION_MESSAGES.noSession }
+      }
+      const result = loop.retry()
+      if (!result.ok) console.error(`[shopify-builder] try again refused: ${result.message ?? ''}`)
+      return result
     },
     async readShot(page, viewport, when) {
       if (!paths) return { ok: false, message: 'There is no preview yet.' }

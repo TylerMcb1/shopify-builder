@@ -91,3 +91,25 @@ test('invalid JSON is a blocking offense and a declined sensitive file keeps the
     box.cleanup()
   }
 })
+
+test("Shopify's auto-generated comment header is valid, and a name with spaces is kept in the candidate", async () => {
+  const box = await trees()
+  try {
+    const header = '/*\n * IMPORTANT: The contents of this file are auto-generated.\n */\n'
+    await writeTheme(box.canonical, { 'templates/page.Forms - Purchase Reviews.json': `${header}{"sections":{}}\n` })
+    await writeTheme(box.workspace, {
+      'templates/page.Forms - Purchase Reviews.json': `${header}{"sections":{}}\n`,
+      'templates/index.json': `${header}{"sections":{"a":{"type":"text"}},"order":["a"]}\n`,
+    })
+    const inspection = await inspectStep({ workspace: box.workspace, canonical: box.canonical, policy, approvedSensitive: ['templates/index.json'] })
+    assert.deepEqual(inspection.jsonProblems, [])
+    await writeFile(path.join(box.workspace, 'templates/index.json'), `${header}{"sections": oops}\n`)
+    const broken = await inspectStep({ workspace: box.workspace, canonical: box.canonical, policy, approvedSensitive: ['templates/index.json'] })
+    assert.deepEqual(broken.jsonProblems.map((problem) => problem.file), ['templates/index.json'])
+    const candidate = await buildCandidate({ canonical: box.canonical, workspace: box.workspace, policy, skip: [] })
+    assert.ok(candidate.files.includes('templates/page.Forms - Purchase Reviews.json'))
+    for (const file of candidate.files) await readFile(path.join(candidate.dir, ...file.split('/')))
+  } finally {
+    box.cleanup()
+  }
+})

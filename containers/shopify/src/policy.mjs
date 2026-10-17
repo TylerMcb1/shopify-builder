@@ -120,7 +120,7 @@ function isThemeFile(value) {
   if (value.includes('*') || value.includes('?')) return false
   return value.split('/').every((part) => {
     if (part.length === 0 || part === '.' || part === '..' || part.startsWith('.')) return false
-    return /^[a-zA-Z0-9_-]+(\.[a-zA-Z0-9_-]+)*$/.test(part)
+    return /^[a-zA-Z0-9_-]+([ .][a-zA-Z0-9_-]+)*$/.test(part)
   })
 }
 

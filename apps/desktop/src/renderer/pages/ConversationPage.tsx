@@ -31,6 +31,7 @@ type Item =
   | { kind: 'question'; key: string; event: Extract<SessionEvent, { type: 'question' }> }
   | { kind: 'step'; key: string; step: Ready }
   | { kind: 'blocked'; key: string; event: Blocked }
+  | { kind: 'failed'; key: string; message: string; ended: boolean }
   | { kind: 'notice'; key: string; text: string }
 
 export type SaveOutcome = { message: string; status?: 'confirm' | 'saved' | 'blocked' | 'conflict' }
@@ -83,7 +84,8 @@ export function ConversationPage({
   const question = [...events].reverse().find((event) => event.type === 'question')
   const preview = [...events].reverse().find((event) => event.type === 'preview_ready')
   const page = preview && preview.type === 'preview_ready' && preview.pages.length > 0 ? preview.pages[0]! : 'index'
-  const previewThemeId = preview && preview.type === 'preview_ready' && preview.previewThemeId ? preview.previewThemeId : themeId
+  const previewThemeId =
+    preview && preview.type === 'preview_ready' && preview.previewThemeId ? preview.previewThemeId : themeId
 
   // Undo removes the newest kept step; starting over removes all of them.
   const undone = useMemo(() => {
@@ -105,10 +107,20 @@ export function ConversationPage({
   const timeline = useMemo<Item[]>(() => {
     const items: { order: number; item: Item }[] = []
     for (const event of events) {
-      if (event.type === 'assistant') items.push({ order: event.seq, item: { kind: 'claude', key: `a${event.seq}`, text: event.text } })
-      if (event.type === 'question') items.push({ order: event.seq, item: { kind: 'question', key: `q${event.seq}`, event } })
-      if (event.type === 'step_ready') items.push({ order: event.seq, item: { kind: 'step', key: `s${event.seq}`, step: event } })
-      if (event.type === 'validation_blocked') items.push({ order: event.seq, item: { kind: 'blocked', key: `b${event.seq}`, event } })
+      if (event.type === 'assistant')
+        items.push({ order: event.seq, item: { kind: 'claude', key: `a${event.seq}`, text: event.text } })
+      if (event.type === 'question')
+        items.push({ order: event.seq, item: { kind: 'question', key: `q${event.seq}`, event } })
+      if (event.type === 'step_ready')
+        items.push({ order: event.seq, item: { kind: 'step', key: `s${event.seq}`, step: event } })
+      if (event.type === 'validation_blocked')
+        items.push({ order: event.seq, item: { kind: 'blocked', key: `b${event.seq}`, event } })
+      if (event.type === 'error') {
+        items.push({
+          order: event.seq,
+          item: { kind: 'failed', key: `e${event.seq}`, message: event.message, ended: event.code !== 'model' },
+        })
+      }
       if (event.type === 'step_undone' || event.type === 'steps_cleared') {
         items.push({ order: event.seq, item: { kind: 'notice', key: `n${event.seq}`, text: event.message } })
       }
@@ -119,6 +131,7 @@ export function ConversationPage({
     return items.sort((a, b) => a.order - b.order).map((entry) => entry.item)
   }, [events, sent])
   const lastItem = timeline.at(-1)
+  const ended = events.some((event) => event.type === 'error' && event.code !== 'model')
 
   async function act(kind: 'undo' | 'retry' | 'startOver', run: () => Promise<ActionOutcome>) {
     setPending(kind)
@@ -199,7 +212,7 @@ export function ConversationPage({
 
   if (view === 'saved' && saved) {
     return (
-      <div className="flex min-h-full items-center justify-center px-8 pb-16">
+      <div className="flex h-full items-center justify-center overflow-y-auto px-8 pb-16">
         <div className="animate-in w-full max-w-md text-center">
           <span className="mx-auto flex size-14 items-center justify-center rounded-full bg-primary-subtle text-primary">
             <CircleCheck className="size-7" aria-hidden="true" />
@@ -239,68 +252,85 @@ export function ConversationPage({
 
   if (view === 'confirm') {
     return (
-      <div className="mx-auto w-full max-w-2xl space-y-6 px-8 pb-12">
-        <Button variant="ghost" className="-ml-2" icon={<ArrowLeft aria-hidden="true" />} onClick={() => setView('chat')}>
-          Back to conversation
-        </Button>
-        <header>
-          <div className="flex items-center gap-2.5">
-            <h1 className="text-[26px] font-semibold tracking-[-0.02em] text-ink">{themeLabel}</h1>
-            <Badge tone="neutral">Unpublished</Badge>
-          </div>
-          <p className="mt-1.5 text-[14px] text-muted">{note || 'Review this change, then save it to the theme.'}</p>
-        </header>
-        {conflict ? (
-          <div className="animate-in rounded-2xl border border-line bg-surface p-5 shadow-card">
-            <div className="flex gap-3">
-              <TriangleAlert className="mt-0.5 size-[18px] shrink-0 text-warning" aria-hidden="true" />
-              <div>
-                <p className="text-[14px] font-semibold text-ink">Someone else changed this theme</p>
-                <p className="mt-1 text-[13.5px] leading-6 text-muted">
-                  {conflict} To be safe, nothing was saved. Load the latest version, then describe your change again.
-                </p>
+      <div className="h-full overflow-y-auto">
+        <div className="mx-auto w-full max-w-2xl space-y-6 px-8 pb-12">
+          <Button
+            variant="ghost"
+            className="-ml-2"
+            icon={<ArrowLeft aria-hidden="true" />}
+            onClick={() => setView('chat')}
+          >
+            Back to conversation
+          </Button>
+          <header className="flex flex-wrap items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2.5">
+                <h1 className="truncate text-[26px] font-semibold tracking-[-0.02em] text-ink">{themeLabel}</h1>
+                <Badge tone="neutral">Unpublished</Badge>
+              </div>
+              <p className="mt-1.5 text-[14px] text-muted">
+                {note || 'Review this change, then save it to the theme.'}
+              </p>
+            </div>
+            {conflict ? null : (
+              <Button
+                size="lg"
+                disabled={saving || steps.length === 0}
+                icon={saving ? <Loader2 className="animate-spin" aria-hidden="true" /> : null}
+                onClick={() => void save()}
+              >
+                Save to theme
+              </Button>
+            )}
+          </header>
+          {conflict ? (
+            <div className="animate-in rounded-2xl border border-line bg-surface p-5 shadow-card">
+              <div className="flex gap-3">
+                <TriangleAlert className="mt-0.5 size-[18px] shrink-0 text-warning" aria-hidden="true" />
+                <div>
+                  <p className="text-[14px] font-semibold text-ink">Someone else changed this theme</p>
+                  <p className="mt-1 text-[13.5px] leading-6 text-muted">
+                    {conflict} To be safe, nothing was saved. Load the latest version, then describe your change again.
+                  </p>
+                </div>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2 pl-[30px]">
+                <Button
+                  disabled={pending !== null}
+                  icon={
+                    pending === 'startOver' ? (
+                      <Loader2 className="animate-spin" aria-hidden="true" />
+                    ) : (
+                      <RotateCcw aria-hidden="true" />
+                    )
+                  }
+                  onClick={() => void startOver()}
+                >
+                  Start over with the latest version
+                </Button>
+                <Button variant="secondary" onClick={() => setView('chat')}>
+                  Back to conversation
+                </Button>
               </div>
             </div>
-            <div className="mt-4 flex flex-wrap gap-2 pl-[30px]">
-              <Button
-                disabled={pending !== null}
-                icon={pending === 'startOver' ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RotateCcw aria-hidden="true" />}
-                onClick={() => void startOver()}
-              >
-                Start over with the latest version
-              </Button>
-              <Button variant="secondary" onClick={() => setView('chat')}>
-                Back to conversation
-              </Button>
+          ) : null}
+          {steps.length > 0 ? (
+            <div className="space-y-3">
+              {steps.map((step) => (
+                <StepCard key={step.seq} step={step} />
+              ))}
             </div>
-          </div>
-        ) : null}
-        {steps.length > 0 ? (
-          <div className="space-y-3">
-            {steps.map((step) => (
-              <StepCard key={step.seq} step={step} />
-            ))}
-          </div>
-        ) : (
-          <Card>
-            <p>No steps yet. Go back and describe the change first.</p>
-          </Card>
-        )}
-        {conflict ? null : (
-          <div className="flex gap-2">
-            <Button
-              size="lg"
-              disabled={saving || steps.length === 0}
-              icon={saving ? <Loader2 className="animate-spin" aria-hidden="true" /> : null}
-              onClick={() => void save()}
-            >
-              Save to theme
-            </Button>
-            <Button size="lg" variant="secondary" onClick={() => setView('chat')}>
+          ) : (
+            <Card>
+              <p>No steps yet. Go back and describe the change first.</p>
+            </Card>
+          )}
+          {conflict ? null : (
+            <Button variant="secondary" onClick={() => setView('chat')}>
               Keep editing
             </Button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     )
   }
@@ -337,45 +367,85 @@ export function ConversationPage({
                   <Sparkles className="size-6" aria-hidden="true" />
                 </span>
                 <p className="mt-4 text-[15px] font-semibold text-ink">What would you like to change?</p>
-                <p className="mt-1 text-[13px] text-muted">Describe it in plain words. Claude makes the change on this theme.</p>
+                <p className="mt-1 text-[13px] text-muted">
+                  Describe it in plain words. Claude makes the change on this theme.
+                </p>
               </div>
             ) : null}
             {timeline.map((item) => {
-              if (item.kind === 'user') return <Bubble key={item.key} side="user">{item.text}</Bubble>
-              if (item.kind === 'claude') return <Bubble key={item.key} side="claude">{item.text}</Bubble>
+              if (item.kind === 'user')
+                return (
+                  <Bubble key={item.key} side="user">
+                    {item.text}
+                  </Bubble>
+                )
+              if (item.kind === 'claude')
+                return (
+                  <Bubble key={item.key} side="claude">
+                    {item.text}
+                  </Bubble>
+                )
               if (item.kind === 'notice') {
                 return (
-                  <p key={item.key} className="animate-in flex items-center justify-center gap-1.5 text-center text-[12.5px] text-muted">
+                  <p
+                    key={item.key}
+                    className="animate-in flex items-center justify-center gap-1.5 text-center text-[12.5px] text-muted"
+                  >
                     <Undo2 className="size-3.5" aria-hidden="true" />
                     {item.text}
                   </p>
                 )
               }
-              if (item.kind === 'blocked') {
+              if (item.kind === 'blocked' || item.kind === 'failed') {
                 const current = lastItem?.key === item.key && !working
+                const stopped = item.kind === 'failed' && item.ended
+                const canRetry = item.kind === 'blocked' ? Boolean(item.event.canRetry) : !stopped
                 return (
                   <div key={item.key} className="animate-in rounded-2xl border border-line bg-surface p-4 shadow-card">
                     <div className="flex gap-3">
                       <TriangleAlert className="mt-0.5 size-[18px] shrink-0 text-warning" aria-hidden="true" />
                       <div>
-                        <p className="text-[14px] font-semibold text-ink">That change didn't go through</p>
-                        <p className="mt-0.5 text-[13.5px] leading-6 text-muted">{item.event.message}</p>
+                        <p className="text-[14px] font-semibold text-ink">
+                          {stopped
+                            ? 'The change assistant stopped'
+                            : item.kind === 'failed'
+                              ? "Claude couldn't finish that step"
+                              : "That change didn't go through"}
+                        </p>
+                        <p className="mt-0.5 text-[13.5px] leading-6 text-muted">
+                          {item.kind === 'blocked' ? item.event.message : `${item.message} Your theme hasn't changed.`}
+                        </p>
                       </div>
                     </div>
                     {current ? (
                       <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 pl-[30px]">
-                        {item.event.canRetry ? (
+                        {stopped ? (
+                          <Button icon={<Sparkles aria-hidden="true" />} onClick={onAnother}>
+                            Start a new change
+                          </Button>
+                        ) : canRetry ? (
                           <Button
                             disabled={pending !== null}
-                            icon={pending === 'retry' ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RotateCcw aria-hidden="true" />}
+                            icon={
+                              pending === 'retry' ? (
+                                <Loader2 className="animate-spin" aria-hidden="true" />
+                              ) : (
+                                <RotateCcw aria-hidden="true" />
+                              )
+                            }
                             onClick={() => void act('retry', onRetry)}
                           >
                             Try again
                           </Button>
                         ) : null}
-                        <span className="text-[12.5px] text-muted">
-                          {item.event.canRetry ? 'Or describe the change a different way below.' : 'Describe the change again below.'}
-                        </span>
+                        {stopped ? null : (
+                          <span className="text-[12.5px] text-muted">
+                            {canRetry
+                              ? 'Or describe the change a different way below.'
+                              : 'Describe the change again below.'}
+                          </span>
+                        )}
+                        {note ? <p className="w-full text-[12.5px] text-danger">{note}</p> : null}
                       </div>
                     ) : null}
                   </div>
@@ -395,7 +465,13 @@ export function ConversationPage({
                           size="sm"
                           variant="ghost"
                           disabled={pending !== null}
-                          icon={pending === 'undo' ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Undo2 aria-hidden="true" />}
+                          icon={
+                            pending === 'undo' ? (
+                              <Loader2 className="animate-spin" aria-hidden="true" />
+                            ) : (
+                              <Undo2 aria-hidden="true" />
+                            )
+                          }
                           onClick={() => void act('undo', onUndo)}
                         >
                           Undo this step
@@ -467,19 +543,28 @@ export function ConversationPage({
                   if (!question) void send()
                 }
               }}
-              placeholder={question ? 'Answer Claude’s question above' : 'Describe the change'}
+              disabled={ended}
+              placeholder={
+                ended
+                  ? 'Start a new change to keep going'
+                  : question
+                    ? 'Answer Claude’s question above'
+                    : 'Describe the change'
+              }
               className="max-h-40 min-h-8 flex-1 resize-none bg-transparent py-1.5 text-[14px] leading-6 text-ink outline-none placeholder:text-faint"
             />
             <button
               type="submit"
               aria-label="Send"
-              disabled={Boolean(question) || !draft.trim()}
+              disabled={ended || Boolean(question) || !draft.trim()}
               className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-primary text-on-primary transition-[background-color,opacity,transform] hover:bg-primary-hover active:scale-95 disabled:opacity-35"
             >
               <ArrowUp className="size-4" aria-hidden="true" />
             </button>
           </form>
-          {note ? <p className="mx-auto mt-2 max-w-2xl text-[12.5px] text-muted">{note}</p> : null}
+          {note && lastItem?.kind !== 'blocked' && lastItem?.kind !== 'failed' ? (
+            <p className="mx-auto mt-2 max-w-2xl text-[12.5px] text-muted">{note}</p>
+          ) : null}
         </div>
       </section>
 
@@ -564,10 +649,18 @@ function Bubble({ side, children }: { side: 'user' | 'claude'; children: string 
 
 function StepCard({ step, undone = false, action }: { step: Ready; undone?: boolean; action?: ReactNode }) {
   return (
-    <article className={`animate-in rounded-2xl border border-line bg-surface p-4 shadow-card ${undone ? 'opacity-55' : ''}`}>
+    <article
+      className={`animate-in rounded-2xl border border-line bg-surface p-4 shadow-card ${undone ? 'opacity-55' : ''}`}
+    >
       <div className="flex items-center justify-between gap-2">
-        <p className={`flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.06em] ${undone ? 'text-muted' : 'text-primary'}`}>
-          {undone ? <Undo2 className="size-3.5" aria-hidden="true" /> : <CircleCheck className="size-3.5" aria-hidden="true" />}
+        <p
+          className={`flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.06em] ${undone ? 'text-muted' : 'text-primary'}`}
+        >
+          {undone ? (
+            <Undo2 className="size-3.5" aria-hidden="true" />
+          ) : (
+            <CircleCheck className="size-3.5" aria-hidden="true" />
+          )}
           {undone ? 'Undone' : 'Change made'}
         </p>
         {action}
@@ -593,12 +686,18 @@ function StepCard({ step, undone = false, action }: { step: Ready; undone?: bool
 function Shot({ label, src, mobile }: { label: string; src?: string; mobile: boolean }) {
   return (
     <div>
-      <figcaption className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-faint">{label}</figcaption>
-      <div className={`overflow-hidden rounded-xl border border-line bg-surface shadow-card ${mobile ? 'mx-auto w-40' : ''}`}>
+      <figcaption className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-faint">
+        {label}
+      </figcaption>
+      <div
+        className={`overflow-hidden rounded-xl border border-line bg-surface shadow-card ${mobile ? 'mx-auto w-40' : ''}`}
+      >
         {src ? (
           <img src={src} alt={`${label} preview`} className="block w-full" />
         ) : (
-          <div className={`flex items-center justify-center text-[12px] text-faint ${mobile ? 'h-72' : 'h-36'}`}>No preview yet</div>
+          <div className={`flex items-center justify-center text-[12px] text-faint ${mobile ? 'h-72' : 'h-36'}`}>
+            No preview yet
+          </div>
         )}
       </div>
     </div>

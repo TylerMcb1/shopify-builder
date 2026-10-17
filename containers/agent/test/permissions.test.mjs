@@ -90,7 +90,8 @@ test('ordinary theme files and searches at the workspace root are allowed', () =
 
 test('theme paths reject traversal and dotfiles', () => {
   assert.equal(isThemePath('sections/hero.liquid'), true)
-  for (const bad of ['/etc/passwd', '../x', 'sections/../x', '.env', 'a//b', 'layout/checkout.liquid/..']) {
+  assert.equal(isThemePath('templates/page.Forms - Purchase Reviews.json'), true)
+  for (const bad of ['/etc/passwd', '../x', 'sections/../x', '.env', 'a//b', 'layout/checkout.liquid/..', 'templates/ x.json', 'templates/x .json', 'templates/a  b.json']) {
     assert.equal(isThemePath(bad), false, bad)
   }
 })

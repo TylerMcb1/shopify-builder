@@ -44,7 +44,7 @@ export async function inspectStep(opts: {
     if (themeFileAccess(rel) === 'sensitive' && !approved.has(rel)) sensitiveUnapproved.push(rel)
     if (rel.endsWith('.json')) {
       try {
-        JSON.parse(data.toString('utf8'))
+        parseThemeJson(data.toString('utf8'))
       } catch {
         jsonProblems.push({
           check: 'JsonParse',
@@ -78,6 +78,28 @@ export async function inspectStep(opts: {
 }
 
 /** Canonical files plus this step's accepted changes. The caller deletes the directory. */
+/**
+ * Shopify writes an "auto-generated" comment block at the top of templates, section groups, and
+ * settings_data.json, and accepts those files. Only leading comments are allowed; the rest is strict JSON.
+ */
+export function parseThemeJson(text: string): unknown {
+  let rest = text.replace(/^\uFEFF/, '')
+  for (;;) {
+    rest = rest.trimStart()
+    if (rest.startsWith('/*')) {
+      const end = rest.indexOf('*/', 2)
+      if (end === -1) throw new SyntaxError('unterminated comment')
+      rest = rest.slice(end + 2)
+    } else if (rest.startsWith('//')) {
+      const end = rest.indexOf('\n')
+      rest = end === -1 ? '' : rest.slice(end + 1)
+    } else {
+      break
+    }
+  }
+  return JSON.parse(rest)
+}
+
 export async function buildCandidate(opts: {
   canonical: string
   workspace: string
@@ -98,8 +120,8 @@ export async function buildCandidate(opts: {
   const dir = path.join(path.dirname(opts.canonical), `.candidate-${randomBytes(6).toString('hex')}`)
   await mkdir(dir, { recursive: true })
   try {
+    // Every path here already passed intake. Skipping one would record it as deleted.
     for (const [rel, data] of files) {
-      if (!isThemePath(rel)) continue
       const dest = path.join(dir, ...rel.split('/'))
       if (!dest.startsWith(dir + path.sep)) throw new Error('path escapes candidate')
       await mkdir(path.dirname(dest), { recursive: true })
