@@ -2,20 +2,20 @@
   "minimumDockerVersion": "24.0.0",
   "images": {
     "base": {
-      "ref": "shopify-builder/base:local",
-      "id": "sha256:deff652fe49a4b1c7b37ef8fdf1e8b803899c5d45581baeb19e22e0e24c61f7f"
+      "ref": "ghcr.io/tylermcb1/shopify-builder-base@sha256:33e4a03d9b41082fd07c732b5c4c88d39e69c8e3aeda1ce6b4bc3b0692056a65",
+      "id": null
     },
     "agent": {
-      "ref": "shopify-builder/agent:local",
-      "id": "sha256:509d161df38459546a7bbf750f7c4daa45fa2313e0e1491dca181772a2b84d48"
+      "ref": "ghcr.io/tylermcb1/shopify-builder-agent@sha256:dfd51cb024f14a7ed8359dd552413eaaefd31c14e19093382156fd61f05a3cf8",
+      "id": null
     },
     "shopify": {
-      "ref": "shopify-builder/shopify:local",
-      "id": "sha256:9969b62e3f4e095c6226d188f3262b3e7702d38e50bd6bec23a216ebead55f0c"
+      "ref": "ghcr.io/tylermcb1/shopify-builder-shopify@sha256:9829a46df0254d94404d9abcdca95d21d7b8517b81ace5ed2a0930ed450bdb28",
+      "id": null
     },
     "gateway": {
-      "ref": "shopify-builder/anthropic-gateway:local",
-      "id": "sha256:f0a4d99e326a45f3b141dbe69bfeedc117f50560b15c36731de75644d4975c7a"
+      "ref": "ghcr.io/tylermcb1/shopify-builder-anthropic-gateway@sha256:1dfa91be2aac71b91e5223aa772e3dcaa9b18f34d71c039f25164bde5bde612d",
+      "id": null
     }
   }
 }

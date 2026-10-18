@@ -27,6 +27,3 @@ nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: false
-publish:
-  provider: generic
-  url: https://updates.example.com/shopify-builder/win

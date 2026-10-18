@@ -8,7 +8,9 @@
 import { spawnSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 
-const [prefix, tag] = process.argv.slice(2)
+const [rawPrefix, tag] = process.argv.slice(2)
+// Registry repository names must be lowercase (GitHub usernames often are not).
+const prefix = rawPrefix?.toLowerCase()
 if (!prefix || !tag) {
   process.stderr.write('Usage: node scripts/release-tool-images.mjs <registry/owner> <tag>\n')
   process.exit(1)
