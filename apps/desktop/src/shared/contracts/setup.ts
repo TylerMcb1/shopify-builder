@@ -9,7 +9,7 @@ export const SetupStatusSchema = z.object({
   }),
   images: z.object({
     ready: z.boolean(),
-    status: z.enum(['ready', 'missing', 'mismatch', 'unpinned', 'invalid-manifest']),
+    status: z.enum(['ready', 'missing', 'downloading', 'mismatch', 'unpinned', 'invalid-manifest']),
     message: z.string().min(1).max(400),
     images: z
       .array(

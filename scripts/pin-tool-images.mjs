@@ -7,6 +7,8 @@ const manifestPath = new URL('../apps/desktop/resources/tool-manifest.json', imp
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
 
 for (const [name, pin] of Object.entries(manifest.images)) {
+  // Release pins (repo@sha256:…) come from release-tool-images.mjs and stay as they are.
+  if (pin.ref.includes('@sha256:')) continue
   const result = spawnSync('docker', ['image', 'inspect', '--format', '{{.Id}}', pin.ref], { encoding: 'utf8' })
   if (result.status !== 0) {
     process.stderr.write(`Missing image ${pin.ref} (${name}). Build it with npm run images:build.\n`)

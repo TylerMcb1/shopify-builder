@@ -2,7 +2,14 @@ import { app, BrowserWindow, ipcMain, nativeTheme, session, shell } from 'electr
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { checkDockerDesktop } from '../../../../packages/host/src/docker/status.ts'
-import { checkToolImages, readToolManifest, type ToolManifest } from '../../../../packages/host/src/docker/images.ts'
+import {
+  checkToolImages,
+  pullToolImages,
+  readToolManifest,
+  runnableImage,
+  type ToolImageReport,
+  type ToolManifest,
+} from '../../../../packages/host/src/docker/images.ts'
 import { SessionEventSchema } from '../../../../packages/host/src/agent/protocol.ts'
 import { LINK_DENIED, type OpenExternalResult } from '../shared/contracts/setup.ts'
 import { sessionEventChannel } from '../shared/contracts/channels.ts'
@@ -31,18 +38,18 @@ if (!gotLock) {
     const appUrl = rendererUrl()
     const manifest = await loadManifest()
     installSessionPolicy(appUrl)
-    const shopifyImage = manifest?.images.shopify.id ?? manifest?.images.shopify.ref ?? 'shopify-builder/shopify:local'
+    const shopifyImage = manifest ? runnableImage(manifest.images.shopify) : 'shopify-builder/shopify:local'
     const services = createAppServices({
       userDataDir: app.getPath('userData'),
       shopifyImage,
-      gatewayImage: manifest?.images.gateway.id ?? manifest?.images.gateway.ref ?? 'shopify-builder/anthropic-gateway:local',
+      gatewayImage: manifest ? runnableImage(manifest.images.gateway) : 'shopify-builder/anthropic-gateway:local',
       codec: electronSecretCodec(),
       version: app.getVersion(),
       capture: (pages, dir, when) => capturePreview(pages, dir, when),
     })
     const bridge = createSessionBridge({
       userDataDir: app.getPath('userData'),
-      image: manifest?.images.agent.id ?? manifest?.images.agent.ref ?? 'shopify-builder/agent:local',
+      image: manifest ? runnableImage(manifest.images.agent) : 'shopify-builder/agent:local',
       send: (event) => {
         for (const win of BrowserWindow.getAllWindows()) win.webContents.send(sessionEventChannel, event)
       },
@@ -164,9 +171,44 @@ async function loadStatus(manifest: ToolManifest | null) {
     checkDocker: () => checkDockerDesktop({ minimumVersion: manifest?.minimumDockerVersion ?? '24.0.0' }),
     checkImages: async () => {
       if (!manifest) throw new Error('missing manifest')
-      return checkToolImages({ manifest })
+      const report = await checkToolImages({ manifest })
+      if (report.status !== 'missing') return report
+      startImagePull(manifest)
+      return downloadingReport(report)
     },
   })
+}
+
+// First run on a new computer: the tool images are pulled from the registry in the background.
+// The setup screen polls status while this runs; a failed pull starts again on the next check.
+let imagePull: Promise<void> | null = null
+let imagePullError = false
+
+function startImagePull(manifest: ToolManifest): void {
+  if (imagePull) return
+  imagePull = pullToolImages({ manifest })
+    .then((result) => {
+      imagePullError = !result.ok
+    })
+    .catch(() => {
+      imagePullError = true
+    })
+    .finally(() => {
+      imagePull = null
+    })
+}
+
+function downloadingReport(report: ToolImageReport): ToolImageReport {
+  return {
+    ...report,
+    status: 'downloading',
+    message: imagePullError
+      ? "Couldn't download the tools. Check your internet connection. Trying again…"
+      : 'Downloading the tools Shopify Builder needs. This happens once and can take several minutes.',
+    images: report.images.map((image) =>
+      image.status === 'missing' ? { ...image, message: 'Downloading…' } : image,
+    ),
+  }
 }
 
 async function openAllowedLink(raw: string, storeDomain: string | null): Promise<OpenExternalResult> {

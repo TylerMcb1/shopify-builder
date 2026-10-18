@@ -7,7 +7,9 @@ import {
   checkToolImages,
   interpretImageInspect,
   parseToolManifest,
+  pullToolImages,
   readToolManifest,
+  runnableImage,
   type ToolManifest,
 } from '../../src/docker/images.ts'
 
@@ -103,4 +105,44 @@ test('readToolManifest reads a pin file from disk', async () => {
   const read = await readToolManifest(file)
   assert.equal(read.images.gateway.ref, 'shopify-builder/anthropic-gateway:local')
   assert.equal(read.images.gateway.id, ID_A)
+})
+
+const DIGEST = `sha256:${'c'.repeat(64)}`
+const release: ToolManifest = {
+  minimumDockerVersion: '24.0.0',
+  images: {
+    base: { ref: `ghcr.io/acme/shopify-builder-base@${DIGEST}`, id: null },
+    agent: { ref: `ghcr.io/acme/shopify-builder-agent@${DIGEST}`, id: null },
+    shopify: { ref: `ghcr.io/acme/shopify-builder-shopify@${DIGEST}`, id: null },
+    gateway: { ref: `ghcr.io/acme/shopify-builder-anthropic-gateway@${DIGEST}`, id: null },
+  },
+}
+
+test('digest-pinned images are ready once present and run by digest', () => {
+  assert.equal(parseToolManifest(release).images.agent.ref, release.images.agent.ref)
+  const report = interpretImageInspect(release, { ...ids, gateway: ID_B })
+  assert.equal(report.status, 'ready')
+  assert.equal(runnableImage(release.images.agent), release.images.agent.ref)
+  assert.equal(runnableImage(manifest.images.agent), ID_A)
+  assert.throws(() =>
+    parseToolManifest({ ...release, images: { ...release.images, base: { ref: 'ghcr.io/a/b@sha256:abc', id: null } } }),
+  )
+})
+
+test('pullToolImages pulls only missing digest-pinned images', async () => {
+  const pulls: string[] = []
+  const result = await pullToolImages({
+    manifest: { ...release, images: { ...release.images, base: manifest.images.base } },
+    run: async (args) => {
+      const ref = args[args.length - 1] ?? ''
+      if (args[0] === 'pull') {
+        pulls.push(ref)
+        return { exitCode: ref.includes('gateway') ? 1 : 0, stdout: '', stderr: '', spawnError: null }
+      }
+      const present = ref.includes('shopify-builder-agent')
+      return { exitCode: present ? 0 : 1, stdout: present ? ID_A : '', stderr: '', spawnError: null }
+    },
+  })
+  assert.deepEqual(pulls, [release.images.shopify.ref, release.images.gateway.ref])
+  assert.deepEqual(result, { ok: false, failed: ['gateway'] })
 })

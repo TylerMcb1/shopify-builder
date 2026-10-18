@@ -65,6 +65,7 @@ export function SetupPage({
       return bridge.getSetupStatus()
     },
     enabled: Boolean(bridge),
+    refetchInterval: (query) => (query.state.data?.images.status === 'downloading' ? 3000 : false),
   })
   const accountQuery = useQuery({
     queryKey: ['account'],

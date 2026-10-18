@@ -62,6 +62,9 @@ export {
 } from './docker/status.ts'
 export {
   checkToolImages,
+  isDigestRef,
+  pullToolImages,
+  runnableImage,
   interpretImageInspect,
   parseToolManifest,
   readToolManifest,

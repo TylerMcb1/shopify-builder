@@ -10,12 +10,19 @@ asar: true
 # Dugite runs its bundled git from app.asar.unpacked; a binary inside the archive cannot be spawned.
 asarUnpack:
   - node_modules/dugite/git/**
+mac:
+  target: [dmg]
+  category: public.app-category.developer-tools
+  hardenedRuntime: true
+  notarize: true
 win:
   target:
     - nsis
-  # A release build is signed with the publisher certificate. This file is the installer
-  # definition. Producing the signed Windows package is a Windows release step.
   signAndEditExecutable: true
+publish:
+  provider: github
+  owner: TylerMcb1
+  repo: shopify-builder
 nsis:
   oneClick: false
   perMachine: false
