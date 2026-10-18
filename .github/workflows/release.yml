@@ -13,6 +13,8 @@ jobs:
         with: { node-version: 22 }
       - run: npm ci
       - run: npm ci
+        working-directory: packages/host
+      - run: npm ci
         working-directory: apps/desktop
       - run: npm run dist:win
         working-directory: apps/desktop
