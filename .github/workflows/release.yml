@@ -16,6 +16,9 @@ jobs:
         working-directory: packages/host
       - run: npm ci
         working-directory: apps/desktop
+      - run: gh release create ${{ github.ref_name }} --draft --title ${{ github.ref_name }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: npm run dist:win
         working-directory: apps/desktop
         env:
