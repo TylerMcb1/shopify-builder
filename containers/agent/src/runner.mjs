@@ -13,9 +13,11 @@ const agentStateDir = process.env.AGENT_STATE_DIR || '/agent-state'
 
 let policy
 let instructions
+let context
 try {
   policy = loadPolicy(policyDir)
   instructions = readFileSync(path.join(policyDir, 'system-instructions.md'), 'utf8')
+  context = readFileSync(path.join(policyDir, 'CONTEXT.md'), 'utf8')
 } catch {
   send({ type: 'error', code: 'protocol', message: 'The change assistant could not read its rules.' })
   process.exit(1)
@@ -42,7 +44,7 @@ const engine = runEngine({
   policy,
   workspaceRoot,
   agentStateDir,
-  systemPrompt: buildSystemPrompt(instructions, policy),
+  systemPrompt: buildSystemPrompt(instructions, policy, context),
   limits,
   // The container holds no credentials; stderr reaches only the host's main-process log.
   log: (text) => process.stderr.write(`${text}\n`),

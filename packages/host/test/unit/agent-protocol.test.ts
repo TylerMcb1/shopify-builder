@@ -6,6 +6,7 @@ import {
   AGENT_MAX_REPAIRS,
   AGENT_MAX_TURNS,
   HostToRunnerSchema,
+  MODEL_IMAGE_MAX_BASE64,
   PROGRESS_LABELS,
   RunnerMessageSchema,
   SessionEventSchema,
@@ -81,6 +82,12 @@ test('host commands reject extra fields and a third repair is a host decision', 
   assert.equal(HostToRunnerSchema.safeParse({ type: 'start', resume: true, token: 'x' }).success, false)
   assert.equal(HostToRunnerSchema.safeParse({ type: 'cancel' }).success, true)
   assert.equal(HostToRunnerSchema.safeParse({ type: 'user_message', text: 'Hi' }).success, true)
+  const image = { mediaType: 'image/jpeg', data: 'aGVsbG8=' }
+  assert.equal(HostToRunnerSchema.safeParse({ type: 'user_message', text: 'Hi', image }).success, true)
+  assert.equal(HostToRunnerSchema.safeParse({ type: 'user_message', text: 'Hi', image: { ...image, mediaType: 'image/gif' } }).success, false)
+  assert.equal(HostToRunnerSchema.safeParse({ type: 'user_message', text: 'Hi', image: { ...image, data: 'not base64!' } }).success, false)
+  const tooBig = { ...image, data: 'A'.repeat(MODEL_IMAGE_MAX_BASE64 + 4) }
+  assert.equal(HostToRunnerSchema.safeParse({ type: 'user_message', text: 'Hi', image: tooBig }).success, false)
   assert.equal(AGENT_MAX_REPAIRS, 2)
-  assert.equal(AGENT_MAX_TURNS, 8)
+  assert.equal(AGENT_MAX_TURNS, 32)
 })

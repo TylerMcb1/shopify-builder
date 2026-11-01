@@ -5,8 +5,23 @@ on:
 permissions:
   contents: write
 jobs:
-  windows:
-    runs-on: windows-latest
+  # One draft for every platform; each build job uploads its installer into it.
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh release create ${{ github.ref_name }} --draft --title ${{ github.ref_name }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+  build:
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, dist: 'dist:win' }
+          - { os: macos-latest, dist: 'dist:mac' }
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -16,10 +31,7 @@ jobs:
         working-directory: packages/host
       - run: npm ci
         working-directory: apps/desktop
-      - run: gh release create ${{ github.ref_name }} --draft --title ${{ github.ref_name }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - run: npm run dist:win
+      - run: npm run ${{ matrix.dist }}
         working-directory: apps/desktop
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

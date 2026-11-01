@@ -1,3 +1,4 @@
 node_modules/
 containers/.dev/
 apps/desktop/out/
+apps/desktop/release/

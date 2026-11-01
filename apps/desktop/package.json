@@ -13,7 +13,8 @@
     "test": "node --test \"test/**/*.test.ts\"",
     "smoke": "electron-vite build && node scripts/smoke.mjs",
     "smoke:approval": "electron-vite build && node scripts/smoke.mjs approval",
-    "dist:win": "electron-vite build && electron-builder --win --publish always"
+    "dist:win": "electron-vite build && electron-builder --win --publish always",
+    "dist:mac": "electron-vite build && electron-builder --mac --publish always"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.80.7",

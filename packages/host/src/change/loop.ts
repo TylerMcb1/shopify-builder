@@ -169,10 +169,14 @@ export function createChangeLoop(opts: {
           try {
             previewId = await opts.ports.pushPreview('files', changed, opts.canonical)
           } catch (err) {
-            previewWarning = err instanceof HostError ? err.userMessage : CHANGE_MESSAGES.previewSkipped
+            opts.log?.(`preview update failed: ${err instanceof HostError ? `${err.code}: ${err.userMessage} ${err.detail ?? ''}` : (err as Error).message}`)
+            previewWarning = err instanceof HostError ? CHANGE_MESSAGES.previewFailed : CHANGE_MESSAGES.previewSkipped
           }
         }
-        const pages = pagesToCapture(opts.storeDomain, typeof previewId === 'number' ? previewId : opts.themeId, event.pageTypes)
+        // Without an updated preview there is nothing that shows this change, so take no "after" shot.
+        const pages = previewWarning
+          ? []
+          : pagesToCapture(opts.storeDomain, typeof previewId === 'number' ? previewId : opts.themeId, event.pageTypes)
         if (opts.ports.capture && pages.length > 0) {
           await opts.ports.capture(pages, 'after').catch(() => {})
         }
@@ -289,6 +293,8 @@ export function createChangeLoop(opts: {
     afterStep,
     preparePreview,
     save,
+    /** True when this chat has kept a step that is not saved to the theme yet. */
+    hasUnsavedSteps: () => lastGood !== base,
     noteUserMessage(text: string) {
       if (title === 'theme change') title = text
       lastRequest = text

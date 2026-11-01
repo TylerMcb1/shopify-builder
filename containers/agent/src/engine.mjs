@@ -4,24 +4,34 @@ import { createInterface } from 'node:readline'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { buildPageOutline } from './page-outline.mjs'
 import { DECLINE_MESSAGE, decideToolUse, isThemePath } from './permissions.mjs'
 
 export const DEFAULT_LIMITS = {
-  maxTurns: 8,
+  maxTurns: 32,
   maxRepairs: 2,
   stepTimeoutMs: 10 * 60 * 1000,
 }
 
 const SESSION_FILE = 'sdk-session.json'
+// Matches MODEL_IMAGE_MAX_BASE64 on the host. Keeps one message under the 1,000,000-character line limit.
+const MAX_IMAGE_BASE64 = 700_000
+const IMAGE_TYPES = ['image/jpeg', 'image/png']
+const SCREENSHOT_NOTE =
+  'The attached image is the homepage of this working copy on a desktop screen (1280 × 800, first screen only), taken when this chat opened.'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 const TIMEOUT_MESSAGE = 'This step took too long, so I stopped.'
 const MODEL_MESSAGE = "Couldn't finish this step."
+// The host restores the last good files after a failed step, and the app adds "Your theme hasn't changed."
+const MAX_TURNS_MESSAGE =
+  'This change needed more steps than I can take at once, so I stopped before finishing. Try again, or ask for one part of the change at a time.'
 
-export function buildSystemPrompt(base, policy) {
+export function buildSystemPrompt(base, policy, context = '') {
   return [
     String(base).trim(),
     '',
+    ...(String(context).trim() ? [String(context).trim(), ''] : []),
     `Allowed theme paths: ${policy.allowed.join(', ')}`,
     `Blocked files: ${policy.blocked.join(', ')}`,
     'Sensitive files require the user to approve a write or edit before you change them.',
@@ -124,8 +134,9 @@ export function runEngine(opts) {
       send({ type: 'error', code: 'model', message: 'A change is already running.' })
       return
     }
-    const prompt = repair ? repairPrompt(message) : readUserText(message)
-    if (prompt === null) {
+    const text = repair ? repairPrompt(message) : readUserText(message)
+    const image = repair ? null : readImage(message)
+    if (text === null || image === false) {
       send({ type: 'error', code: 'protocol', message: 'That message is not part of this step.' })
       return
     }
@@ -151,8 +162,10 @@ export function runEngine(opts) {
       turnRemaining = limits.stepTimeoutMs
       armTimer()
       send({ type: 'progress', stage: repair ? 'repairing' : 'thinking' })
+      const prompt = repair ? text : await requestPrompt(text, image)
       const result = await opts.runtime.runTurn({
         prompt,
+        image,
         resumeSessionId,
         workspaceRoot: opts.workspaceRoot,
         systemPrompt: opts.systemPrompt,
@@ -177,7 +190,10 @@ export function runEngine(opts) {
       })
     } catch (err) {
       if (err?.code === 'timeout' || err?.code === 'cancelled' || turnAbort.signal.aborted) sendTurnAbort()
-      else {
+      else if (err?.code === 'max_turns') {
+        opts.log?.(`turn stopped: reached the limit of ${limits.maxTurns} turns`)
+        send({ type: 'error', code: 'model', message: MAX_TURNS_MESSAGE })
+      } else {
         opts.log?.(`turn failed: ${String(err?.stack ?? err?.message ?? err).slice(0, 1500)}`)
         send({ type: 'error', code: 'model', message: MODEL_MESSAGE })
       }
@@ -185,6 +201,21 @@ export function runEngine(opts) {
       clearTimeout(turnTimer)
       busy = false
     }
+  }
+
+  /** The merchant's words plus the context in policy/CONTEXT.md. A missing outline never blocks a turn. */
+  async function requestPrompt(text, image) {
+    let outline = ''
+    try {
+      outline = await buildPageOutline(opts.workspaceRoot, text)
+    } catch (err) {
+      opts.log?.(`page outline failed: ${String(err?.message ?? err).slice(0, 500)}`)
+    }
+    const parts = []
+    if (image) parts.push(`<screenshot>${SCREENSHOT_NOTE}</screenshot>`)
+    if (outline) parts.push(`<page_outline>\n${outline}\n</page_outline>`)
+    if (parts.length === 0) return text
+    return [...parts, `<merchant_request>\n${text}\n</merchant_request>`].join('\n\n')
   }
 
   function sendTurnAbort() {
@@ -311,6 +342,16 @@ function readUserText(message) {
   const text = message.text
   if (text.length < 1 || text.length > 8000 || text.includes('\0')) return null
   return text
+}
+
+/** @returns {{ mediaType: string, data: string } | null | false} null when absent, false when invalid */
+function readImage(message) {
+  if (message.image === undefined) return null
+  const image = message.image
+  if (!image || typeof image !== 'object' || !IMAGE_TYPES.includes(image.mediaType)) return false
+  if (typeof image.data !== 'string' || image.data.length < 1 || image.data.length > MAX_IMAGE_BASE64) return false
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(image.data)) return false
+  return { mediaType: image.mediaType, data: image.data }
 }
 
 function repairPrompt(message) {

@@ -33,4 +33,6 @@ The Theme Access password is requested from `getThemeToken()` only when the cont
 
 `createAgentSession` speaks the runner protocol over stdin and stdout. It copies `canonical/` into `sessions/<id>/workspace`, mounts only that directory and `agent-state/`, and validates every runner line. Sensitive-file descriptions come from `containers/agent/policy/sensitive-descriptions.json`, not from the model. A malformed line, a step timeout, or an idle timeout ends the session. Tests spawn the runner with a stand-in for Claude, not the SDK.
 
+What the model receives is set in `containers/agent/policy/`. `system-instructions.md` holds the rules and the reply style. `CONTEXT.md` describes the context sent with each message: a page outline that `src/page-outline.mjs` builds from the workspace for every message, and a homepage screenshot sent with the first message once the session's preview shot exists. Both files are added to the system prompt when the runner starts. Edit them, then rebuild the agent image.
+
 Not yet verified: image builds and network isolation, because Docker was unavailable in the authoring environment.

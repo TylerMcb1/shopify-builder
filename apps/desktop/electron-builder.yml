@@ -11,8 +11,14 @@ asar: true
 asarUnpack:
   - node_modules/dugite/git/**
 mac:
-  target: [dmg]
+  # Built on an Apple Silicon runner; Dugite's bundled git matches the build machine's architecture.
+  target:
+    - target: dmg
+      arch: [arm64]
   category: public.app-category.developer-tools
+  # Ad-hoc signature until there is a Developer ID certificate. Without any signature, Gatekeeper reports
+  # a downloaded app as damaged. Notarization is skipped unless the APPLE_* variables are set.
+  identity: '-'
   hardenedRuntime: true
   notarize: true
 win:

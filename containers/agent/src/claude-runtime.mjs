@@ -16,7 +16,9 @@ export function buildQueryOptions(ctx, mcpServer) {
     resume: ctx.resumeSessionId ?? undefined,
     abortController: controller,
     tools: [...ALLOWED_BUILTIN_TOOLS],
-    allowedTools: [...ALLOWED_BUILTIN_TOOLS, ...APP_MCP_TOOLS],
+    // Only the app's own tools are pre-approved. A theme file tool listed here would skip canUseTool,
+    // and with it the path policy and the approval pop-up for sensitive files.
+    allowedTools: [...APP_MCP_TOOLS],
     disallowedTools: [...DISALLOWED_TOOLS],
     // Empty list: do not load CLAUDE.md, .claude, or user settings from the workspace.
     settingSources: [],
@@ -37,6 +39,25 @@ export function buildQueryOptions(ctx, mcpServer) {
   }
 }
 
+/** A plain string, or one user message with the screenshot first when the host sent one. */
+export function buildPrompt(ctx) {
+  if (!ctx.image) return ctx.prompt
+  const message = {
+    type: 'user',
+    parent_tool_use_id: null,
+    message: {
+      role: 'user',
+      content: [
+        { type: 'image', source: { type: 'base64', media_type: ctx.image.mediaType, data: ctx.image.data } },
+        { type: 'text', text: ctx.prompt },
+      ],
+    },
+  }
+  return (async function* () {
+    yield message
+  })()
+}
+
 export async function runTurn(ctx) {
   const { query, tool, createSdkMcpServer } = await import('@anthropic-ai/claude-agent-sdk')
   const { z } = await import('zod')
@@ -44,6 +65,7 @@ export async function runTurn(ctx) {
   let warnings = []
   let pageTypes = []
   let reported = false
+  let outOfTurns = false
   let sessionId = ctx.resumeSessionId
 
   const askUser = tool(
@@ -58,7 +80,7 @@ export async function runTurn(ctx) {
   )
   const reportStep = tool(
     'report_step',
-    'Finish this step with a plain-English summary, warnings, and the page types likely affected.',
+    'Finish this step. summary: one or two plain sentences on what changed and where it shows. warnings: only what the merchant must act on. pageTypes: the page types likely affected.',
     {
       summary: z.string(),
       warnings: z.array(z.string()).optional(),
@@ -80,18 +102,26 @@ export async function runTurn(ctx) {
   })
   const options = buildQueryOptions(ctx, mcpServer)
 
-  for await (const message of query({ prompt: ctx.prompt, options })) {
-    if (ctx.signal.aborted) break
-    if (message && typeof message.session_id === 'string') sessionId = message.session_id
-    if (message?.type === 'assistant' && Array.isArray(message.message?.content)) {
-      const text = message.message.content
-        .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
-        .map((block) => block.text)
-        .join('')
-      if (text.trim()) ctx.hooks.onAssistant(text)
+  try {
+    for await (const message of query({ prompt: buildPrompt(ctx), options })) {
+      if (ctx.signal.aborted) break
+      if (message && typeof message.session_id === 'string') sessionId = message.session_id
+      if (message?.type === 'result' && message.subtype === 'error_max_turns') outOfTurns = true
+      if (message?.type === 'assistant' && Array.isArray(message.message?.content)) {
+        const text = message.message.content
+          .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
+          .map((block) => block.text)
+          .join('')
+        // Text after report_step repeats the summary the app already shows.
+        if (text.trim() && !reported) ctx.hooks.onAssistant(text)
+      }
     }
+  } catch (err) {
+    // The SDK can throw a generic error after an error result; the result already said why.
+    if (!outOfTurns) throw err
   }
 
+  if (outOfTurns && !reported) throw Object.assign(new Error('max_turns'), { code: 'max_turns' })
   if (!reported) warnings = [...warnings, 'Claude did not report a structured result.']
   return { sessionId, summary, warnings, pageTypes }
 }

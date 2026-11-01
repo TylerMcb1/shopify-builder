@@ -13,6 +13,7 @@ import {
   SESSION_MESSAGES,
   SessionEventSchema,
   type HostToRunner,
+  type ModelImage,
   type SessionBody,
   type SessionCommandResult,
   type SessionEvent,
@@ -21,7 +22,8 @@ import {
 export interface AgentSession {
   readonly id: string
   readonly ready: Promise<void>
-  sendUserMessage(text: string): SessionCommandResult
+  /** The image goes to the model with this message; see containers/agent/policy/CONTEXT.md. */
+  sendUserMessage(text: string, image?: ModelImage): SessionCommandResult
   requestRepair(problems: unknown): SessionCommandResult
   decideApproval(requestId: string, decision: 'approve' | 'decline'): SessionCommandResult
   answerQuestion(requestId: string, text: string): SessionCommandResult
@@ -264,12 +266,12 @@ export function createAgentSession(opts: {
   return {
     id: opts.sessionId,
     ready: readyPromise,
-    sendUserMessage(text) {
+    sendUserMessage(text, image) {
       if (ended) return { ok: false, message: SESSION_MESSAGES.noSession }
       if (!ready) return { ok: false, message: SESSION_MESSAGES.notReady }
       if (turnInFlight || pending) return { ok: false, message: SESSION_MESSAGES.busy }
       if (containsCredential(text)) return { ok: false, message: SESSION_MESSAGES.credential }
-      const parsed = HostToRunnerSchema.safeParse({ type: 'user_message', text })
+      const parsed = HostToRunnerSchema.safeParse({ type: 'user_message', text, ...(image ? { image } : {}) })
       if (!parsed.success) return { ok: false, message: SESSION_MESSAGES.unexpected }
       repairs = 0
       stepApproved.length = 0

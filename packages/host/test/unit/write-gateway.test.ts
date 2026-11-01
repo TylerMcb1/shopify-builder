@@ -131,3 +131,36 @@ test('a real push command is accepted by the container policy and returns the th
     cleanup()
   }
 })
+
+test('the preview theme is updated in place, and recreated from the whole tree when Shopify has deleted it', async () => {
+  const { dir, cleanup } = tempDir('sb-gateway-')
+  try {
+    const records = openRecords(dir)
+    const pushes: string[][] = []
+    const preview: Theme = { id: 333, name: 'Development (old)', role: 'development' }
+    records.saveOwnership({ storeId: 'store-1', themeId: 333, kind: 'preview', name: preview.name, originThemeId: null, retired: false })
+
+    assert.equal(await gateway(records, [working, preview], pushes).updatePreview('files', dir, ['sections/hero.liquid']), 333)
+    assert.deepEqual(pushes.at(-1)?.slice(pushes.at(-1)!.indexOf('--theme'), pushes.at(-1)!.indexOf('--theme') + 2), ['--theme', '333'])
+    assert.ok(pushes.at(-1)?.includes('sections/hero.liquid'))
+
+    const recreated = await gateway(records, [working, { id: 444, name: 'Development (new)', role: 'development' }], pushes).updatePreview(
+      'files',
+      dir,
+      ['sections/hero.liquid'],
+    )
+    assert.equal(recreated, 444)
+    assert.equal(records.getOwnership('store-1', 333)?.retired, true)
+    assert.equal(records.getPreview('store-1')?.themeId, 444)
+    assert.ok(pushes.at(-1)?.includes('--development'))
+    assert.equal(pushes.at(-1)?.includes('--only'), false)
+
+    await assert.rejects(
+      gateway(records, [working, { id: 444, name: 'Development (new)', role: 'live' }], pushes).updatePreview('mirror', dir, []),
+      (err: unknown) => err instanceof HostError && err.userMessage === CHANGE_MESSAGES.notWritable,
+    )
+    assert.equal(records.getPreview('store-1')?.themeId, 444)
+  } finally {
+    cleanup()
+  }
+})

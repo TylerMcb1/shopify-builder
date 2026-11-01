@@ -18,7 +18,6 @@ import type { SessionEvent } from '../../shared/contracts/session.ts'
 import { Badge } from '../components/Badge.tsx'
 import { Button } from '../components/Button.tsx'
 import { Card, Note } from '../components/Card.tsx'
-import { inputClass } from '../components/Field.tsx'
 import { Markdown } from '../components/Markdown.tsx'
 import { Segmented } from '../components/Segmented.tsx'
 
@@ -81,7 +80,19 @@ export function ConversationPage({
   const last = events.at(-1)
   const progress = [...events].reverse().find((event) => event.type === 'progress')
   const working = last?.type === 'progress'
-  const question = [...events].reverse().find((event) => event.type === 'question')
+  const [answered, setAnswered] = useState<ReadonlySet<string>>(() => new Set())
+  // A question stays open until it is answered here or its step ends; the message box answers it.
+  const asked = [...events].reverse().find((event) => event.type === 'question')
+  const question =
+    asked?.type === 'question' &&
+    !answered.has(asked.requestId) &&
+    !events.some(
+      (event) =>
+        event.seq > asked.seq &&
+        (event.type === 'error' || event.type === 'step_ready' || event.type === 'validation_blocked'),
+    )
+      ? asked
+      : undefined
   const preview = [...events].reverse().find((event) => event.type === 'preview_ready')
   const page = preview && preview.type === 'preview_ready' && preview.pages.length > 0 ? preview.pages[0]! : 'index'
   const previewThemeId =
@@ -183,6 +194,11 @@ export function ConversationPage({
     if (!text) return
     setDraft('')
     remember(text)
+    if (question) {
+      setAnswered((current) => new Set(current).add(question.requestId))
+      await onAnswer(question.requestId, text)
+      return
+    }
     setNote(await onSend(text))
   }
 
@@ -481,35 +497,13 @@ export function ConversationPage({
                   />
                 )
               }
-              const event = item.event
-              const open = question?.seq === event.seq
               return (
-                <form
-                  key={item.key}
-                  className="animate-in rounded-2xl border border-line bg-surface p-4 shadow-card"
-                  onSubmit={(submit) => {
-                    submit.preventDefault()
-                    const answer = new FormData(submit.currentTarget).get('answer')
-                    if (typeof answer === 'string' && answer.trim()) {
-                      remember(answer.trim())
-                      submit.currentTarget.reset()
-                      void onAnswer(event.requestId, answer.trim())
-                    }
-                  }}
-                >
+                <div key={item.key} className="animate-in rounded-2xl border border-line bg-surface p-4 shadow-card">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-primary">Claude asks</p>
                   <div className="mt-1 text-[14px] leading-6 text-ink">
-                    <Markdown>{event.text}</Markdown>
+                    <Markdown>{item.event.text}</Markdown>
                   </div>
-                  {open ? (
-                    <div className="mt-3 flex gap-2">
-                      <input name="answer" autoFocus placeholder="Your answer" className={inputClass} />
-                      <Button type="submit" className="h-9">
-                        Send answer
-                      </Button>
-                    </div>
-                  ) : null}
-                </form>
+                </div>
               )
             })}
             {working ? (
@@ -540,23 +534,18 @@ export function ConversationPage({
               onKeyDown={(key) => {
                 if (key.key === 'Enter' && !key.shiftKey) {
                   key.preventDefault()
-                  if (!question) void send()
+                  void send()
                 }
               }}
               disabled={ended}
-              placeholder={
-                ended
-                  ? 'Start a new change to keep going'
-                  : question
-                    ? 'Answer Claude’s question above'
-                    : 'Describe the change'
-              }
+              autoFocus={Boolean(question)}
+              placeholder={ended ? 'Start a new change to keep going' : question ? 'Answer Claude’s question' : 'Describe the change'}
               className="max-h-40 min-h-8 flex-1 resize-none bg-transparent py-1.5 text-[14px] leading-6 text-ink outline-none placeholder:text-faint"
             />
             <button
               type="submit"
               aria-label="Send"
-              disabled={ended || Boolean(question) || !draft.trim()}
+              disabled={ended || !draft.trim()}
               className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-primary text-on-primary transition-[background-color,opacity,transform] hover:bg-primary-hover active:scale-95 disabled:opacity-35"
             >
               <ArrowUp className="size-4" aria-hidden="true" />

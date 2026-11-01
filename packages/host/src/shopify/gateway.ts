@@ -86,17 +86,38 @@ export function createWriteGateway(deps: {
     return pushed
   }
 
+  const createPreview = (treeDir: string, mode: 'development' | 'fallback') =>
+    create(
+      'preview',
+      mode === 'development' ? 'create-development' : 'create-unpublished',
+      treeDir,
+      null,
+      mode === 'fallback' ? '[Builder] Preview' : undefined,
+    )
+
   return {
     createWorkingCopy: (name: string, treeDir: string, originThemeId: number) =>
       create('working-copy', 'create-unpublished', treeDir, originThemeId, name),
-    createPreview: (treeDir: string, mode: 'development' | 'fallback') =>
-      create(
-        'preview',
-        mode === 'development' ? 'create-development' : 'create-unpublished',
-        treeDir,
-        null,
-        mode === 'fallback' ? '[Builder] Preview' : undefined,
-      ),
+    createPreview,
+    /**
+     * Brings the store's preview theme up to date with treeDir and returns its id. Shopify deletes
+     * development themes (for example after a while without use), so a preview theme that is gone
+     * is retired and a new one is created from the whole tree.
+     */
+    async updatePreview(mode: 'mirror' | 'files', treeDir: string, files: readonly string[]): Promise<number> {
+      const existing = deps.records.getPreview(deps.storeId)?.themeId
+      if (existing) {
+        try {
+          if (mode === 'mirror') await pushExisting(existing, 'preview', 'mirror', treeDir)
+          else await pushExisting(existing, 'preview', 'files', treeDir, files)
+          return existing
+        } catch (err) {
+          if (!(err instanceof HostError && err.code === 'theme-not-found')) throw err
+          deps.records.retire(deps.storeId, existing)
+        }
+      }
+      return (await createPreview(treeDir, 'development')).id
+    },
     mirrorPreview: (themeId: number, treeDir: string) => pushExisting(themeId, 'preview', 'mirror', treeDir),
     pushPreviewFiles: (themeId: number, treeDir: string, files: readonly string[]) =>
       pushExisting(themeId, 'preview', 'files', treeDir, files),

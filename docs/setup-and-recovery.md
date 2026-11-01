@@ -28,6 +28,8 @@ Get ready to go live checks that every change is saved, Theme Check has no new e
 
 A signed Windows install is built from `apps/desktop/electron-builder.yml`. The updater accepts a download only when the signature matches, and it will not restart while a change is open. Check for updates on the home screen. If a tool-image download fails, the app keeps the previous verified images. Building that signed installer is a Windows release step; this Mac checkout does not produce it.
 
+The release also has a `.dmg` for Apple Silicon Macs. It is ad-hoc signed, not notarized, so the first time you open it macOS says it cannot verify the app. Choose Done, open System Settings > Privacy & Security, and choose Open Anyway next to Shopify Builder. The `.exe` is the Windows installer and does not open on a Mac.
+
 ## When something is stuck
 
 - Docker is not running: open Docker Desktop, then click Retry.

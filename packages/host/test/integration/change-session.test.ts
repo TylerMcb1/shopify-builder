@@ -390,9 +390,11 @@ test('overlapping Shopify edits that cannot merge do not push', async () => {
     },
   })
   try {
+    assert.equal(loop.hasUnsavedSteps(), false)
     await writeFile(path.join(box.workspace, 'sections/hero.liquid'), 'from session\n')
     await loop.afterStep(step('Updated the hero.'))
     await waitFor(events, 'step_ready')
+    assert.equal(loop.hasUnsavedSteps(), true)
     const treeDir = path.join(box.dir, 'remote')
     for (const [rel, content] of Object.entries({ ...FILES, 'sections/hero.liquid': 'from shopify\n' })) {
       await mkdir(path.dirname(path.join(treeDir, rel)), { recursive: true })
@@ -414,6 +416,7 @@ test('overlapping Shopify edits that cannot merge do not push', async () => {
     assert.equal(undone.message, CHANGE_MESSAGES.stepUndone)
     assert.ok(events.some((event) => event.type === 'step_undone'))
     assert.equal(await readFile(path.join(box.canonical, 'sections/hero.liquid'), 'utf8'), 'hello\n')
+    assert.equal(loop.hasUnsavedSteps(), false)
     assert.equal((await loop.undoStep()).message, CHANGE_MESSAGES.nothingToUndo)
     const fresh = await loop.redoOnLatest()
     assert.equal(fresh.message, CHANGE_MESSAGES.startedOver)

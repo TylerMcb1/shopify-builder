@@ -16,7 +16,7 @@ export function isThemePath(value: string): boolean {
 
 export const ThemePathSchema = z.string().refine(isThemePath, 'bad theme path')
 
-export const AGENT_MAX_TURNS = 8
+export const AGENT_MAX_TURNS = 32
 export const AGENT_MAX_REPAIRS = 2
 /** In-container limit. The host's limit is a little longer so a timeout can be reported first. */
 export const RUNNER_STEP_TIMEOUT_MS = 10 * 60 * 1000
@@ -196,9 +196,25 @@ export const RepairProblemSchema = z
   })
   .strict()
 
+/** Base64 limit for the screenshot sent with a message, so one runner line stays under 1,000,000 characters. */
+export const MODEL_IMAGE_MAX_BASE64 = 700_000
+
+export const ModelImageSchema = z
+  .object({
+    mediaType: z.enum(['image/jpeg', 'image/png']),
+    data: z
+      .string()
+      .min(1)
+      .max(MODEL_IMAGE_MAX_BASE64)
+      .regex(/^[A-Za-z0-9+/]+={0,2}$/),
+  })
+  .strict()
+
+export type ModelImage = z.infer<typeof ModelImageSchema>
+
 export const HostToRunnerSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('start'), resume: z.boolean() }).strict(),
-  z.object({ type: z.literal('user_message'), text: z.string().min(1).max(8000) }).strict(),
+  z.object({ type: z.literal('user_message'), text: z.string().min(1).max(8000), image: ModelImageSchema.optional() }).strict(),
   z.object({ type: z.literal('approval'), requestId: RequestIdSchema, decision: z.enum(['approve', 'decline']) }).strict(),
   z.object({ type: z.literal('question_answer'), requestId: RequestIdSchema, text: z.string().min(1).max(2000) }).strict(),
   z.object({ type: z.literal('repair'), problems: z.array(RepairProblemSchema).min(1).max(30) }).strict(),

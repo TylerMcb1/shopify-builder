@@ -15,6 +15,8 @@ export const CHANGE_MESSAGES = {
   nothingToSave: 'There is nothing new to save.',
   connectStore: 'Connect your store before saving.',
   previewSkipped: 'Connect your store to update the preview. Your change is saved on this computer.',
+  previewFailed:
+    "Couldn't update the preview, so it doesn't show this change yet. The change is kept here and goes to Shopify when you save.",
   restored: 'Your previous step is back.',
   discarded: 'Discarded. Your theme was not changed.',
 } as const

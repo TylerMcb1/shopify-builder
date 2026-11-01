@@ -1,7 +1,8 @@
-import { app, BrowserWindow, ipcMain, nativeTheme, session, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, session, shell } from 'electron'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { checkDockerDesktop } from '../../../../packages/host/src/docker/status.ts'
+import { dockerExec } from '../../../../packages/host/src/docker/exec.ts'
 import {
   checkToolImages,
   pullToolImages,
@@ -18,10 +19,12 @@ import { contentSecurityPolicy, createWindowSecurityOptions } from '../shared/se
 import { classifyExternalUrl } from '../shared/security/links.ts'
 import { collectSetupStatus } from './foundation.ts'
 import { hardenWebContents, registerIpc } from './ipc.ts'
-import { capturePreview } from './preview-capture.ts'
+import { capturePreview, shotForModel } from './preview-capture.ts'
 import { electronSecretCodec } from './secret-codec.ts'
 import { createAppServices } from './services.ts'
 import { createSessionBridge } from './session-bridge.ts'
+
+if (process.platform === 'darwin') addDockerToPath()
 
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
@@ -38,18 +41,19 @@ if (!gotLock) {
     const appUrl = rendererUrl()
     const manifest = await loadManifest()
     installSessionPolicy(appUrl)
-    const shopifyImage = manifest ? runnableImage(manifest.images.shopify) : 'shopify-builder/shopify:local'
+    const images = await toolImages(manifest)
+    const shopifyImage = images.shopify
     const services = createAppServices({
       userDataDir: app.getPath('userData'),
       shopifyImage,
-      gatewayImage: manifest ? runnableImage(manifest.images.gateway) : 'shopify-builder/anthropic-gateway:local',
+      gatewayImage: images.gateway,
       codec: electronSecretCodec(),
       version: app.getVersion(),
       capture: (pages, dir, when) => capturePreview(pages, dir, when),
     })
     const bridge = createSessionBridge({
       userDataDir: app.getPath('userData'),
-      image: manifest ? runnableImage(manifest.images.agent) : 'shopify-builder/agent:local',
+      image: images.agent,
       send: (event) => {
         for (const win of BrowserWindow.getAllWindows()) win.webContents.send(sessionEventChannel, event)
       },
@@ -59,6 +63,7 @@ if (!gotLock) {
         image: shopifyImage,
         getThemeToken: () => services.getThemeToken(),
         capture: (pages, dir, when) => capturePreview(pages, dir, when),
+        shotForModel: async (file) => shotForModel(file),
       },
     })
     services.bindBusy(() => bridge.busy())
@@ -93,9 +98,10 @@ if (!gotLock) {
       startWorkingCopy: (themeId) => services.startWorkingCopy(themeId),
       updateStatus: () => services.updateStatus(),
     })
-    const win = createWindow(appUrl)
+    const guard = (window: BrowserWindow) => confirmCloseWithUnsavedChange(window, bridge)
+    const win = guard(createWindow(appUrl))
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow(appUrl)
+      if (BrowserWindow.getAllWindows().length === 0) guard(createWindow(appUrl))
     })
     const retentionTimer = setInterval(() => {
       void services.applyRetention()
@@ -110,6 +116,48 @@ if (!gotLock) {
   })
 
   app.on('window-all-closed', () => app.quit())
+}
+
+// Finder starts apps with PATH=/usr/bin:/bin:/usr/sbin:/sbin, which has neither the docker CLI
+// nor the credential helper it calls during a pull. These are where Docker Desktop puts them.
+function addDockerToPath(): void {
+  const dirs = (process.env['PATH'] ?? '').split(path.delimiter).filter(Boolean)
+  for (const dir of [
+    path.join(app.getPath('home'), '.docker', 'bin'),
+    '/usr/local/bin',
+    '/Applications/Docker.app/Contents/Resources/bin',
+  ]) {
+    if (!dirs.includes(dir)) dirs.push(dir)
+  }
+  process.env['PATH'] = dirs.join(path.delimiter)
+}
+
+/**
+ * Closing the window, or quitting (which closes it), with a kept step that is not saved asks first,
+ * like any app with an unsaved document. Closing without saving discards the change.
+ */
+function confirmCloseWithUnsavedChange(
+  win: BrowserWindow,
+  bridge: { hasUnsavedChange(): boolean; discard(): Promise<unknown> },
+): BrowserWindow {
+  let closing = false
+  win.on('close', (event) => {
+    if (closing || !bridge.hasUnsavedChange()) return
+    event.preventDefault()
+    const choice = dialog.showMessageBoxSync(win, {
+      type: 'warning',
+      buttons: ['Cancel', 'Close Without Saving'],
+      defaultId: 0,
+      cancelId: 0,
+      message: 'You have a change that isn’t saved to your theme.',
+      detail: 'If you close now, the change is discarded. To keep it, choose Cancel, then Save to theme.',
+    })
+    if (choice !== 1) return
+    closing = true
+    const timeout = new Promise((resolve) => setTimeout(resolve, 5_000))
+    void Promise.race([bridge.discard().catch(() => {}), timeout]).finally(() => win.close())
+  })
+  return win
 }
 
 function rendererUrl(): string {
@@ -155,6 +203,30 @@ function createWindow(appUrl: string): BrowserWindow {
   if (devUrl) void win.loadURL(devUrl)
   else void win.loadFile(path.join(__dirname, '../renderer/index.html'))
   return win
+}
+
+const LOCAL_IMAGES = {
+  agent: 'shopify-builder/agent:local',
+  shopify: 'shopify-builder/shopify:local',
+  gateway: 'shopify-builder/anthropic-gateway:local',
+} as const
+
+// A packaged app runs the images pinned in the manifest. A dev run uses the images built from this
+// checkout by `npm run images:build` when they exist, so container changes can be tried before a release.
+async function toolImages(manifest: ToolManifest | null): Promise<Record<keyof typeof LOCAL_IMAGES, string>> {
+  const names = Object.keys(LOCAL_IMAGES) as (keyof typeof LOCAL_IMAGES)[]
+  const chosen = await Promise.all(
+    names.map(async (name) => {
+      const local = LOCAL_IMAGES[name]
+      if (!manifest) return local
+      if (!app.isPackaged && (await dockerExec('docker', ['image', 'inspect', '--format', '{{.Id}}', local])).exitCode === 0) {
+        console.info(`[shopify-builder] dev run: using ${local}`)
+        return local
+      }
+      return runnableImage(manifest.images[name])
+    }),
+  )
+  return Object.fromEntries(names.map((name, i) => [name, chosen[i]])) as Record<keyof typeof LOCAL_IMAGES, string>
 }
 
 async function loadManifest(): Promise<ToolManifest | null> {

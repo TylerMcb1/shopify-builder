@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildQueryOptions, ALLOWED_BUILTIN_TOOLS, APP_MCP_TOOLS, DISALLOWED_TOOLS } from '../src/claude-runtime.mjs'
+import { buildPrompt, buildQueryOptions, ALLOWED_BUILTIN_TOOLS, APP_MCP_TOOLS, DISALLOWED_TOOLS } from '../src/claude-runtime.mjs'
 
 test('query options allow only theme file tools and the two app tools', async () => {
   const calls = []
@@ -9,7 +9,7 @@ test('query options allow only theme file tools and the two app tools', async ()
       workspaceRoot: '/workspace',
       resumeSessionId: null,
       signal: new AbortController().signal,
-      maxTurns: 8,
+      maxTurns: 32,
       systemPrompt: 'Edit the theme.',
       hooks: {
         canUseTool: async (name) => {
@@ -22,7 +22,8 @@ test('query options allow only theme file tools and the two app tools', async ()
   )
 
   assert.deepEqual(options.tools, ALLOWED_BUILTIN_TOOLS)
-  assert.deepEqual(options.allowedTools, [...ALLOWED_BUILTIN_TOOLS, ...APP_MCP_TOOLS])
+  assert.deepEqual(options.allowedTools, [...APP_MCP_TOOLS])
+  for (const name of ALLOWED_BUILTIN_TOOLS) assert.equal(options.allowedTools.includes(name), false, name)
   for (const name of ['Bash', 'WebFetch', 'WebSearch', 'NotebookEdit', 'Task', 'Skill']) {
     assert.ok(DISALLOWED_TOOLS.includes(name), name)
     assert.ok(options.disallowedTools.includes(name), name)
@@ -54,7 +55,7 @@ test('an aborted turn aborts the query controller', () => {
       workspaceRoot: '/workspace',
       resumeSessionId: '11111111-1111-4111-8111-111111111111',
       signal: controller.signal,
-      maxTurns: 8,
+      maxTurns: 32,
       systemPrompt: 'x',
       hooks: { canUseTool: async () => ({ behavior: 'allow' }) },
     },
@@ -62,4 +63,19 @@ test('an aborted turn aborts the query controller', () => {
   )
   assert.equal(options.abortController.signal.aborted, true)
   assert.equal(options.resume, '11111111-1111-4111-8111-111111111111')
+})
+
+test('a screenshot goes first in a single user message; otherwise the prompt stays a string', async () => {
+  assert.equal(buildPrompt({ prompt: 'Make it blue', image: null }), 'Make it blue')
+  const messages = []
+  for await (const message of buildPrompt({ prompt: 'Make it blue', image: { mediaType: 'image/jpeg', data: 'aGk=' } })) {
+    messages.push(message)
+  }
+  assert.equal(messages.length, 1)
+  assert.equal(messages[0].type, 'user')
+  assert.equal(messages[0].parent_tool_use_id, null)
+  assert.deepEqual(messages[0].message.content, [
+    { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'aGk=' } },
+    { type: 'text', text: 'Make it blue' },
+  ])
 })

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -184,6 +184,24 @@ test('a step that ignores the clock is stopped', async () => {
   await box.cleanup()
 })
 
+test('a step that runs out of turns says so instead of a generic failure', async () => {
+  let maxTurns = 0
+  const box = harness({
+    async runTurn(ctx) {
+      maxTurns = ctx.maxTurns
+      throw Object.assign(new Error('max_turns'), { code: 'max_turns' })
+    },
+  })
+  box.send({ type: 'start', resume: false })
+  box.send({ type: 'user_message', text: 'Rebuild the whole homepage' })
+  const error = await waitFor(box.messages, 'error')
+  assert.equal(error.code, 'model')
+  assert.match(error.message, /more steps than I can take/)
+  assert.equal(maxTurns, 32)
+  assert.equal(box.messages.some((message) => message.type === 'step_result'), false)
+  await box.cleanup()
+})
+
 test('cancel stops the turn without a step result', async () => {
   const box = harness({
     async runTurn(ctx) {
@@ -252,9 +270,59 @@ test('resume reloads the sdk session id from agent state', async () => {
   await rm(dir, { recursive: true, force: true })
 })
 
+test('a message carries the page outline and the screenshot; a repair does not', async () => {
+  const workspace = await mkdtemp(path.join(tmpdir(), 'sb-engine-ws-'))
+  await mkdir(path.join(workspace, 'templates'))
+  await writeFile(
+    path.join(workspace, 'templates', 'index.json'),
+    JSON.stringify({ sections: { a: { type: 'rich-text' } }, order: ['a'] }),
+  )
+  const dir = await mkdtemp(path.join(tmpdir(), 'sb-engine-'))
+  const turns = []
+  const input = new PassThrough()
+  const messages = []
+  const engine = runEngine({
+    input,
+    send: (message) => messages.push(message),
+    runtime: {
+      async runTurn(ctx) {
+        turns.push({ prompt: ctx.prompt, image: ctx.image })
+        return { sessionId: SESSION, summary: 'Done.', warnings: [], pageTypes: [] }
+      },
+    },
+    policy,
+    workspaceRoot: workspace,
+    agentStateDir: dir,
+    systemPrompt: 'test',
+  })
+  const image = { mediaType: 'image/jpeg', data: 'aGVsbG8=' }
+  const write = (message) => input.write(JSON.stringify(message) + '\n')
+  write({ type: 'start', resume: false })
+  write({ type: 'user_message', text: 'Move it up', image })
+  await waitFor(messages, 'step_result', 1)
+  write({ type: 'repair', problems: [{ file: 'templates/index.json', check: 'JsonParse', message: 'Bad JSON.' }] })
+  await waitFor(messages, 'step_result', 2)
+  write({ type: 'user_message', text: 'Bigger', image: { mediaType: 'image/gif', data: 'aGVsbG8=' } })
+  const error = await waitFor(messages, 'error')
+
+  assert.equal(error.code, 'protocol')
+  assert.equal(turns.length, 2)
+  assert.deepEqual(turns[0].image, image)
+  assert.match(turns[0].prompt, /^<screenshot>The attached image is the homepage[^<]*<\/screenshot>\n\n<page_outline>\n/)
+  assert.match(turns[0].prompt, /1\. "rich-text" · type rich-text · id a/)
+  assert.match(turns[0].prompt, /<\/page_outline>\n\n<merchant_request>\nMove it up\n<\/merchant_request>$/)
+  assert.equal(turns[1].image, null)
+  assert.match(turns[1].prompt, /^Theme Check found new blocking problems/)
+  input.end()
+  await engine.finished
+  await rm(dir, { recursive: true, force: true })
+  await rm(workspace, { recursive: true, force: true })
+})
+
 test('the system prompt lists the rules and does not invite a shell', () => {
-  const prompt = buildSystemPrompt('Make a small change.', policy)
-  assert.match(prompt, /Make a small change/)
+  const prompt = buildSystemPrompt('Make a small change.', policy, '# Context the app sends')
+  assert.match(prompt, /Make a small change\.\n\n# Context the app sends\n\nAllowed theme paths/)
+  assert.doesNotMatch(buildSystemPrompt('Make a small change.', policy), /\n\n\n/)
   assert.match(prompt, /assets\/\*\*/)
   assert.match(prompt, /layout\/checkout\.liquid/)
   assert.match(prompt, /Do not run shell commands/)

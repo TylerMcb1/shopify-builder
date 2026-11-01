@@ -1,6 +1,7 @@
 // Starts one agent session from the main process (README 6.2). The renderer cannot supply mounts or docker arguments.
 import { spawn, type ChildProcess } from 'node:child_process'
 import { stat, readFile, cp } from 'node:fs/promises'
+import { setTimeout as delay } from 'node:timers/promises'
 import path from 'node:path'
 import { HostError } from '../../../../packages/host/src/errors.ts'
 import { randomUUID } from 'node:crypto'
@@ -25,6 +26,7 @@ import {
   SESSION_MESSAGES,
   SessionEventSchema,
   StartSessionInputSchema,
+  type ModelImage,
   type SessionCommandResult,
   type SessionEvent,
   type StartSessionInput,
@@ -47,7 +49,12 @@ export interface ShopifyConnection {
   image: string
   getThemeToken: () => Promise<string>
   capture?: (pages: PreviewPage[], dir: string, when: 'before' | 'after') => Promise<void>
+  /** Reads a saved shot as an image the model can take. */
+  shotForModel?: (file: string) => Promise<ModelImage | null>
 }
+
+/** How long a message waits for the homepage shot before going without it. */
+const SHOT_WAIT_MS = 10_000
 
 export function createSessionBridge(deps: {
   userDataDir: string
@@ -79,6 +86,7 @@ export function createSessionBridge(deps: {
   readShot(page: string, viewport: 'desktop' | 'mobile', when: 'before' | 'after'): Promise<{ ok: true; dataUrl: string } | { ok: false; message: string }>
   storeDomain(): string | null
   busy(): boolean
+  hasUnsavedChange(): boolean
 } {
   const docker = deps.dockerCommand ?? 'docker'
   let current: AgentSession | null = null
@@ -89,6 +97,9 @@ export function createSessionBridge(deps: {
   let lines: ChatLine[] = []
   let chatTheme = 0
   let chatId = ''
+  let previewReady: Promise<void> | null = null
+  let previewDone = false
+  let shotSent = false
 
   const remember = (role: ChatLine['role'], text: string) => {
     const clean = text.replace(/\s+/g, ' ').trim().slice(0, 4000)
@@ -120,6 +131,19 @@ export function createSessionBridge(deps: {
     await deps.onSessionEnded?.().catch(() => {})
   }
 
+  /** The homepage shot for the first message after this session's preview is captured (CONTEXT.md). */
+  async function shotForMessage(): Promise<ModelImage | undefined> {
+    const read = deps.shopify?.shotForModel
+    if (shotSent || !read || !paths || !previewReady) return undefined
+    if (!previewDone) await Promise.race([previewReady, delay(SHOT_WAIT_MS)])
+    // An older shot from a resumed session may still be on disk until the new capture finishes.
+    if (!previewDone) return undefined
+    const image = await read(path.join(paths.sessionDir, 'shots', 'before-desktop-index.png')).catch(() => null)
+    if (!image) return undefined
+    shotSent = true
+    return image
+  }
+
   async function ensureNetwork(): Promise<void> {
     const inspected = await dockerExec(docker, buildAgentNetworkInspectArgs())
     const state = interpretAgentNetwork(inspected.exitCode, inspected.stdout)
@@ -134,6 +158,7 @@ export function createSessionBridge(deps: {
   return {
     storeDomain: () => domain,
     busy: () => current !== null || loop !== null,
+    hasUnsavedChange: () => loop?.hasUnsavedSteps() ?? false,
     async start(input) {
       const parsed = StartSessionInputSchema.safeParse(input)
       if (!parsed.success) return { ok: false, message: SESSION_MESSAGES.unexpected }
@@ -149,6 +174,22 @@ export function createSessionBridge(deps: {
         if (deps.prepareAgent) {
           const ready = await deps.prepareAgent()
           if (ready && ready.ok === false) return ready
+        }
+        // The theme's local copy must match this chat's history before the workspace is copied from it.
+        // A chat closed without saving or discarding leaves its edits there; a new chat would then show
+        // them in the preview but never save them, because they are not in its history.
+        let started: { history: ReturnType<typeof createSessionHistory>; branch: { commit: string } } | null = null
+        if (deps.shopify && domain) {
+          try {
+            const git = await createGit(deps.userDataDir)
+            const history = createSessionHistory(git)
+            const branch = await history.ensureBranch(theme.historyGit, sessionId)
+            await history.materialize(theme.historyGit, branch.commit, theme.canonical)
+            started = { history, branch }
+          } catch (err) {
+            console.error(`[shopify-builder] change setup failed: ${err instanceof Error ? err.message : String(err)}`)
+            throw new HostError('history-failed', "Couldn't open this theme's history, so the change can't start. Your files haven't changed.")
+          }
         }
         paths = sessionPaths(deps.userDataDir, storeId, sessionId)
         publish(SessionEventSchema.parse({
@@ -214,11 +255,9 @@ export function createSessionBridge(deps: {
             return child
           },
         })
-        if (deps.shopify && domain) {
+        if (deps.shopify && domain && started) {
           try {
-            const git = await createGit(deps.userDataDir)
-            const history = createSessionHistory(git)
-            const branch = await history.ensureBranch(theme.historyGit, sessionId)
+            const { history, branch } = started
             const shopify = deps.shopify
             const storeDomain = domain
             const runner = createShopifyRunner({ image: shopify.image, getThemeToken: shopify.getThemeToken })
@@ -254,17 +293,7 @@ export function createSessionBridge(deps: {
               ports: {
                 runThemeCheck: (dir) => runner.themeCheck(dir),
                 syncTheme: async () => (await read.syncTheme(themeId)).sync,
-                pushPreview: async (mode, _files, treeDir) => {
-                  const records = openRecords(deps.userDataDir)
-                  let previewId = records.getPreview(storeId)?.themeId
-                  if (!previewId) {
-                    const created = await gateway.createPreview(treeDir, 'development')
-                    previewId = created.id
-                  }
-                  if (mode === 'mirror') await gateway.mirrorPreview(previewId, treeDir)
-                  else await gateway.pushPreviewFiles(previewId, treeDir, _files)
-                  return previewId
-                },
+                pushPreview: (mode, files, treeDir) => gateway.updatePreview(mode, treeDir, files),
                 pushSave: (files, treeDir) => gateway.pushSavedFiles(themeId, treeDir, files),
                 capture: shopify.capture
                   ? (pages, when) => shopify.capture!(pages, path.join(sessionPathsNow.sessionDir, 'shots'), when)
@@ -281,7 +310,13 @@ export function createSessionBridge(deps: {
         current = session
         loop = active
         await session.ready
-        if (active) void active.preparePreview()
+        previewDone = false
+        shotSent = false
+        previewReady = active
+          ? active.preparePreview().finally(() => {
+              previewDone = true
+            })
+          : null
         return { ok: true, sessionId }
       } catch (err) {
         await deps.onSessionEnded?.().catch(() => {})
@@ -299,11 +334,15 @@ export function createSessionBridge(deps: {
         return { ok: false, message: 'The change assistant could not start.' }
       }
     },
-    sendMessage(text) {
-      if (!current) return Promise.resolve({ ok: false, message: SESSION_MESSAGES.noSession })
+    async sendMessage(text) {
+      if (!current) return { ok: false, message: SESSION_MESSAGES.noSession }
       remember('user', text)
       loop?.noteUserMessage(text)
-      return Promise.resolve(current.sendUserMessage(text))
+      const image = await shotForMessage()
+      if (!current) return { ok: false, message: SESSION_MESSAGES.noSession }
+      const result = current.sendUserMessage(text, image)
+      if (image && !result.ok) shotSent = false
+      return result
     },
     decideApproval(requestId, decision) {
       const handled = loop?.decideApproval(requestId, decision)
