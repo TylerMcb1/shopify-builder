@@ -25,11 +25,16 @@ win:
   target:
     - nsis
   signAndEditExecutable: true
+# Release files are uploaded by .github/workflows/release.yml. These names match the urls that
+# electron-builder writes into latest.yml and latest-mac.yml, which use dashes instead of spaces.
+dmg:
+  artifactName: Shopify-Builder-${version}-${arch}.${ext}
 publish:
   provider: github
   owner: TylerMcb1
   repo: shopify-builder
 nsis:
+  artifactName: Shopify-Builder-Setup-${version}.${ext}
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: false
