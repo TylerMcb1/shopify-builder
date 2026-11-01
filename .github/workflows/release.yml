@@ -9,6 +9,16 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+      # electron-builder publishes to v<package.json version>, not to the pushed tag. A mismatch
+      # builds everything and then skips the upload, so stop before building.
+      - name: Check the tag matches the app version
+        run: |
+          version=$(node -p "require('./apps/desktop/package.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match apps/desktop/package.json version $version. Set that version to ${GITHUB_REF_NAME#v}, commit, and tag the new commit."
+            exit 1
+          fi
       - run: gh release create ${{ github.ref_name }} --draft --title ${{ github.ref_name }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
